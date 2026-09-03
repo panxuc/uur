@@ -1,0 +1,31 @@
+# Contributor: uur contributors
+# Maintainer: uur contributors
+pkgname=uur
+pkgver=0.1.0
+pkgrel=0
+pkgdesc="Native Linux companion for NetEase UU Remote"
+url="https://github.com/panxuc/uur"
+arch="x86_64"
+license="MIT"
+depends="bash wine curl glib pulseaudio-utils xdg-desktop-portal"
+makedepends="cargo rust gcc musl-dev pipewire-dev pkgconf mingw-w64-gcc mingw-w64-binutils"
+options="!check"
+source="$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz"
+builddir="$srcdir/$pkgname-$pkgver"
+
+build() {
+	cargo build --release --locked
+	./hook/build.sh
+	./capture/build.sh
+}
+
+check() {
+	cargo test --release --locked
+}
+
+package() {
+	./packaging/stage.sh "$pkgdir"
+}
+
+# Release automation replaces this with the source archive's sha512 digest.
+sha512sums="SKIP"

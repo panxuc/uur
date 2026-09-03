@@ -1,0 +1,67 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  packages:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            binutils-mingw-w64-x86-64 gcc libpipewire-0.3-dev \
+            gcc-mingw-w64-x86-64 pkg-config zstd
+      - name: Install nFPM
+        uses: goreleaser/nfpm-action@v2
+        with:
+          version: latest
+      - name: Build distribution packages
+        run: ./packaging/build-packages.sh
+      - name: Publish GitHub release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            dist/*.tar.zst dist/*.deb dist/*.rpm dist/SHA256SUMS \
+            --clobber
+
+  aur:
+    needs: packages
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    if: ${{ github.event_name == 'push' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install publication tools
+        run: pacman -Syu --noconfirm curl git openssh
+      - name: Publish AUR metadata
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          install -Dm0600 /dev/null ~/.ssh/aur
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
+          git clone ssh://aur@aur.archlinux.org/uur.git aur
+          cp packaging/aur/PKGBUILD packaging/aur/uur.install aur/
+          version="${GITHUB_REF_NAME#v}"
+          sed -i "s/^pkgver=.*/pkgver=$version/" aur/PKGBUILD
+          source_url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          digest="$(curl -fsSL "$source_url" | sha256sum | cut -d' ' -f1)"
+          sed -i "s/^sha256sums=.*/sha256sums=('$digest')/" aur/PKGBUILD
+          useradd --create-home builder
+          chown -R builder:builder aur
+          runuser -u builder -- bash -lc 'cd "$1" && makepkg --printsrcinfo > .SRCINFO' _ "$PWD/aur"
+          git -C aur config user.name uur-release-bot
+          git -C aur config user.email actions@users.noreply.github.com
+          git -C aur add PKGBUILD uur.install .SRCINFO
+          git -C aur commit -m "uur $version"
+          GIT_SSH_COMMAND='ssh -i ~/.ssh/aur -o IdentitiesOnly=yes' git -C aur push

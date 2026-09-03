@@ -1,0 +1,93 @@
+doctor:
+  header: "uur 环境报告"
+  install_hint: "未安装 —— 请按发行版说明安装 wine/pipewire"
+  no_portal_backend: "未找到 xdg-desktop-portal 后端（Wayland 捕获/注入不可用）"
+  present: "已就绪"
+  backend_x11: "X11 会话：XTEST 注入"
+  backend_wayland: "Wayland 会话：内核 uinput 注入"
+  backend_portal: "Wayland 会话：标准 RemoteDesktop Portal"
+  backend_none: "未检测到图形会话"
+  uinput_module: "设备存在但内核模块未加载（安装包内附的 udev 规则与 modules-load 条目，然后重启）"
+  uinput_permission: "当前用户不可写（需要 uur 的 uaccess udev 规则或 input 组）"
+  uinput_missing: "此内核没有 /dev/uinput"
+  portal_capture_missing: "当前 Portal 后端未提供 ScreenCast 接口"
+  portal_input_missing: "当前 Portal 后端未提供 RemoteDesktop 接口；可回退到 uinput"
+  terminal_missing: "缺少 Win64 终端代理；请重新安装 uur"
+  launcher_missing: "缺少 Win64 快速启动代理；请重新安装 uur"
+  xdg_launcher_missing: "请安装 GLib 的 gio 或 gtk-launch"
+  wallpaper_missing: "未检测到；可将 UUR_WALLPAPER 设为图片路径"
+  footer: "以上均为提示性检查。运行 `uur setup` 安装受管客户端。"
+
+input:
+  portal_unavailable: "当前会话中 Wayland Portal 输入不可用"
+  no_display: "未检测到图形会话（DISPLAY 与 WAYLAND_DISPLAY 均未设置）"
+  uinput_unavailable: "uinput 不可写 —— 回退到 XTEST（仅 XWayland 范围；请加载 uinput 模块或安装 udev 规则以获得完整覆盖）"
+
+bridge:
+  listening: "输入桥监听于 127.0.0.1:%{port}"
+  session_summary: "已注入 %{count} 条输入记录"
+  connected: "钩子已连接；经 %{backend} 注入"
+  disconnected_clean: "钩子断开；已释放按住的按键"
+  disconnected_error: "钩子错误：%{error}"
+  bad_token_fingerprint: "连接被拒绝：桥接令牌不匹配（收到的令牌前缀 %{prefix}…）"
+  bad_token: "连接被拒绝：桥接令牌不匹配"
+  stop_requested: "已请求停止"
+
+session:
+  already_running: "会话已在运行 —— 直接使用它，或先执行 `uur stop`"
+  server_running: "GameViewerServer 正在运行"
+  launching_client: "正在启动受管客户端（捕获与输入桥已就绪）"
+  client_exited: "客户端已退出（代码 %{code}）；会话结束"
+  capture_error: "画面捕获不可用：%{error}"
+  webview_missing: "客户端目录中缺少 WebView2 安装器，管理界面无法启动"
+  webview_failed: "WebView2 安装失败"
+  quick_launch_ready: "已向 UU 快速启动导出 %{count} 个 Linux 应用"
+  audio_backend: "Wine 音频后端：%{backend}"
+
+upstream:
+  unreachable: "无法访问网易官方发布接口"
+  unparsable: "无法解析发布接口响应：%{url}"
+  latest: "官方最新版本：%{version}（%{filename}）"
+  up_to_date: "受管客户端已是最新"
+  newer_available: "当前安装 %{local}；官方已发布 %{upstream}"
+  not_provisioned: "尚未安装受管客户端；请运行 `uur setup`"
+
+capture:
+  session_ready: "Portal 会话已建立（视频节点 %{node}）；正在写入私有运行时传输"
+  helper_failed: "捕获助手异常退出"
+
+setup:
+  eula_prompt: "官方 UU 远程客户端将从网易官方渠道下载，并受其最终用户协议约束：%{url}\n使用 --accept-eula 重新运行以继续。"
+  eula_required: "需要先接受最终用户协议才能继续安装"
+  eula_recorded: "已记录协议接受状态"
+  already_provisioned: "客户端已安装"
+  downloading: "正在从 %{url} 下载官方安装包"
+  download_failed: "官方安装包下载失败"
+  initializing_prefix: "正在初始化受管 Wine 前缀"
+  installing_client: "正在安装官方客户端（静默模式）"
+  silent_install_unavailable: "安装包忽略静默模式；若弹出窗口请手动完成安装"
+  done: "已安装至 %{path}"
+
+autostart:
+  enabled: "已启用登录自启动：%{path}"
+  disabled: "已禁用登录自启动"
+  status_enabled: "登录自启动已启用：%{path}"
+  status_disabled: "登录自启动未启用"
+
+wol:
+  interface: "网卡：%{interface}"
+  mac: "MAC 地址：%{mac}"
+  magic_support: "Magic Packet 支持：%{state}"
+  magic_enabled: "Magic Packet 已启用：%{state}"
+  connection: "NetworkManager 连接：%{connection}"
+  yes: "是"
+  no: "否"
+  unknown_ethtool: "未知（请安装 ethtool）"
+  unsupported: "%{interface} 未声明支持 Magic Packet 唤醒"
+  verify_failed: "无法验证 %{interface} 的网络唤醒状态"
+  enabled: "已在 %{interface} 上启用 Magic Packet 唤醒"
+  disabled: "已在 %{interface} 上禁用 Magic Packet 唤醒"
+
+display:
+  status: "Wayland 捕获源：%{source}"
+  changed: "Wayland 捕获源已切换为 %{source}；下次运行时 Portal 会请求新的选择"

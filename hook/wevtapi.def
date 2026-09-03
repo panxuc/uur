@@ -1,0 +1,14 @@
+LIBRARY wevtapi
+EXPORTS
+    EvtCancel
+    EvtClose
+    EvtCreateBookmark
+    EvtGetExtendedStatus
+    EvtNext
+    EvtOpenChannelEnum
+    EvtOpenLog
+    EvtOpenPublisherEnum
+    EvtOpenPublisherMetadata
+    EvtQuery
+    EvtRender
+    EvtSubscribe

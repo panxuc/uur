@@ -1,0 +1,93 @@
+doctor:
+  header: "uur environment report"
+  install_hint: "not installed — install wine/pipewire per your distro"
+  no_portal_backend: "no xdg-desktop-portal backend found (Wayland capture/input unavailable)"
+  present: "present"
+  backend_x11: "X11 session: XTEST injection"
+  backend_wayland: "Wayland session: kernel uinput injection (portal path in development)"
+  backend_portal: "Wayland session: standard RemoteDesktop portal"
+  backend_none: "no graphical session detected"
+  uinput_module: "device present but kernel module not loaded (install the packaged udev rule + modules-load entry, then reboot)"
+  uinput_permission: "not writable by this user (needs the uur udev uaccess rule or the input group)"
+  uinput_missing: "/dev/uinput missing from this kernel"
+  portal_capture_missing: "ScreenCast interface unavailable in the active portal backend"
+  portal_input_missing: "RemoteDesktop interface unavailable; uinput can provide the fallback"
+  terminal_missing: "Win64 terminal proxy missing; reinstall uur"
+  launcher_missing: "Win64 Quick Launch proxy missing; reinstall uur"
+  xdg_launcher_missing: "install GLib's gio or gtk-launch"
+  wallpaper_missing: "not detected; set UUR_WALLPAPER to an image path"
+  footer: "Everything above is advisory. Run `uur setup` to provision the managed client."
+
+input:
+  portal_unavailable: "Wayland portal input is not available in this session"
+  no_display: "no graphical session detected (DISPLAY and WAYLAND_DISPLAY are unset)"
+  uinput_unavailable: "uinput not writable — falling back to XTEST (XWayland scope only; load the uinput module or add the udev rule for full coverage)"
+
+bridge:
+  listening: "input bridge listening on 127.0.0.1:%{port}"
+  session_summary: "%{count} input records injected"
+  connected: "hook connected; injecting via %{backend}"
+  disconnected_clean: "hook disconnected; held keys released"
+  disconnected_error: "hook error: %{error}"
+  bad_token_fingerprint: "connection rejected: bridge token mismatch (received prefix %{prefix}…)"
+  bad_token: "connection rejected: bridge token mismatch"
+  stop_requested: "stop requested"
+
+upstream:
+  unreachable: "cannot reach NetEase's official release feed"
+  unparsable: "cannot parse the release feed response: %{url}"
+  latest: "latest official release: %{version} (%{filename})"
+  up_to_date: "the provisioned client is up to date"
+  newer_available: "installed %{local}; upstream now has %{upstream}"
+  not_provisioned: "no provisioned client found; run `uur setup`"
+
+capture:
+  session_ready: "portal session ready (video node %{node}); streaming to the private runtime transport"
+  helper_failed: "the capture helper exited with an error"
+
+session:
+  already_running: "a session is already running - use it, or run `uur stop` first"
+  server_running: "GameViewerServer is running"
+  launching_client: "starting the managed client (capture and bridge are live)"
+  client_exited: "client exited (code %{code}); session ended"
+  capture_error: "capture unavailable: %{error}"
+  webview_missing: "WebView2 bootstrapper missing from the client directory; the management UI cannot start"
+  webview_failed: "WebView2 installation failed"
+  quick_launch_ready: "%{count} Linux applications exported to UU Quick Launch"
+  audio_backend: "Wine audio backend: %{backend}"
+
+setup:
+  eula_prompt: "The official UU Remote client will be downloaded from NetEase and is governed by their EULA: %{url}\nRe-run with --accept-eula to continue."
+  eula_required: "EULA acceptance is required before provisioning"
+  eula_recorded: "EULA acceptance recorded"
+  already_provisioned: "client already provisioned"
+  downloading: "downloading the official installer from %{url}"
+  download_failed: "the official installer download failed"
+  initializing_prefix: "initializing the managed Wine prefix"
+  installing_client: "installing the official client (silent mode)"
+  silent_install_unavailable: "the installer ignored silent mode; complete its window manually if it opened"
+  done: "provisioned into %{path}"
+
+autostart:
+  enabled: "login autostart enabled: %{path}"
+  disabled: "login autostart disabled"
+  status_enabled: "login autostart is enabled: %{path}"
+  status_disabled: "login autostart is disabled"
+
+wol:
+  interface: "interface: %{interface}"
+  mac: "MAC address: %{mac}"
+  magic_support: "Magic Packet support: %{state}"
+  magic_enabled: "Magic Packet enabled: %{state}"
+  connection: "NetworkManager connection: %{connection}"
+  yes: "yes"
+  no: "no"
+  unknown_ethtool: "unknown (install ethtool)"
+  unsupported: "%{interface} does not advertise Magic Packet wake support"
+  verify_failed: "Wake-on-LAN state could not be verified on %{interface}"
+  enabled: "Magic Packet wake enabled on %{interface}"
+  disabled: "Magic Packet wake disabled on %{interface}"
+
+display:
+  status: "Wayland capture source: %{source}"
+  changed: "Wayland capture source changed to %{source}; the portal will ask for a new selection on the next run"

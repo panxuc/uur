@@ -1,0 +1,83 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Rust checks
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --all-targets
+          cc -std=c11 -O2 -Wall -Wextra -Werror tests/frame-protocol.c -o /tmp/frame-protocol
+          /tmp/frame-protocol
+      - name: Build
+        run: cargo build --locked --release
+
+  hook:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install mingw toolchain
+        run: |
+          pacman -Syu --noconfirm mingw-w64-gcc mingw-w64-binutils
+      - name: Build PE components
+        run: ./hook/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uur-hook-pe
+          path: build/hook/*.dll
+
+  package-layout:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install native and PE build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            appstream binutils-mingw-w64-x86-64 desktop-file-utils \
+            gcc gcc-mingw-w64-x86-64 libpipewire-0.3-dev pkg-config \
+            wine xvfb
+      - name: Build and stage
+        run: |
+          cargo build --release --locked
+          ./hook/build.sh
+          ./capture/build.sh
+          stage="$(mktemp -d)"
+          ./packaging/stage.sh "$stage"
+          test -x "$stage/usr/bin/uur"
+          test -x "$stage/usr/lib/uur/uur-pw-capture"
+          test -f "$stage/usr/lib/uur/hook/winlogon.exe"
+          desktop-file-validate "$stage/usr/share/applications/uur.desktop"
+          appstreamcli validate --no-net "$stage/usr/share/metainfo/io.github.panxuc.uur.metainfo.xml"
+          ./tests/hook-smoke.sh
+          ./tests/terminal-smoke.sh
+
+  alpine-musl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test the musl package layout
+        run: docker build --target build -f packaging/alpine/Dockerfile .
+
+  nix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Evaluate and build the flake
+        run: |
+          nix flake check --no-build
+          nix build .#uur

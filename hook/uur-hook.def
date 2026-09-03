@@ -1,0 +1,7 @@
+LIBRARY uur-hook
+EXPORTS
+    ; No functional exports: this import library exists so the wevtapi
+    ; shim can link against uur-hook.dll and force the Windows loader to
+    ; preload it into the client process.
+    hook_send_input
+    uur_hook_version

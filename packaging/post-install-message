@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+command_name=${UUR_COMMAND:-uur}
+
+printf '\n%s\n' 'UU Remote for Linux (uur) was installed successfully.'
+printf '%s\n' 'Complete these steps in order:'
+printf '  1. %s doctor\n' "$command_name"
+printf '  2. %s setup --accept-eula\n' "$command_name"
+printf '  3. %s run\n' "$command_name"
+printf '%s\n' \
+    'The setup command downloads the official client from NetEase.' \
+    'The --accept-eula flag records that you accepted the upstream EULA.' \
+    'Run setup without that flag only when you want to read the EULA URL first.'
+printf '\n'

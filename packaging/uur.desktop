@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=UU Remote
+Name[zh_CN]=UU远程
+GenericName=Remote Desktop Client
+GenericName[zh_CN]=远程桌面客户端
+Comment=Start the full UU Remote session on this Linux desktop
+Comment[zh_CN]=在本 Linux 桌面启动完整的 UU 远程会话
+Exec=uur run
+TryExec=uur
+Icon=uur
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=remote;desktop;uu;网易;远程;

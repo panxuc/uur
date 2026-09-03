@@ -1,0 +1,49 @@
+name: uur
+arch: amd64
+platform: linux
+version: "@UUR_VERSION@"
+section: net
+priority: optional
+maintainer: panxuc <https://github.com/panxuc>
+description: Native Linux companion for NetEase UU Remote
+vendor: uur contributors
+homepage: https://github.com/panxuc/uur
+license: MIT
+scripts:
+  postinstall: "@UUR_PROJECT_ROOT@/packaging/package-postinstall.sh"
+contents:
+  - src: "@UUR_STAGE@/"
+    dst: /
+    type: tree
+overrides:
+  deb:
+    depends:
+      - libc6
+      - libgcc-s1
+      - libglib2.0-bin
+      - wine
+      - curl
+      - libpipewire-0.3-0
+      - xdg-desktop-portal
+    recommends:
+      - xdg-desktop-portal-gnome | xdg-desktop-portal-kde | xdg-desktop-portal-wlr
+      - ethtool
+      - network-manager
+      - pulseaudio-utils
+      - vainfo
+      - vulkan-tools
+  rpm:
+    depends:
+      - glibc
+      - libgcc
+      - glib2
+      - wine
+      - curl
+      - pipewire-libs
+      - xdg-desktop-portal
+    recommends:
+      - ethtool
+      - NetworkManager
+      - pulseaudio-utils
+      - libva-utils
+      - vulkan-tools

@@ -1,0 +1,68 @@
+name: upstream-watch
+
+# Periodically check NetEase's official release feed.  When a new UU Remote
+# version appears this workflow runs the version-independent adapter probe and
+# records the result. See docs/upstream-adaptation.md for the release split.
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # daily, 03:00 UTC
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Query the official release feed
+        id: feed
+        run: |
+          url="$(./scripts/latest-installer-url.sh)"
+          filename="$(basename "${url%%\?*}")"
+          version="$(./scripts/extract-version.sh "$filename")"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "filename=$filename" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Download and probe stable API contracts
+        id: probe
+        continue-on-error: true
+        env:
+          URL: ${{ steps.feed.outputs.url }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            binutils osslsigncode p7zip-full wine xvfb
+          curl -fL --retry 3 -o upstream.exe "$URL"
+          ./scripts/probe-upstream.sh upstream.exe
+      - name: Open or update a tracking issue when upstream moved
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.feed.outputs.version }}
+          FILENAME: ${{ steps.feed.outputs.filename }}
+          PROBE: ${{ steps.probe.outcome }}
+        run: |
+          gh label create upstream-release --description "Official UU Remote changed" \
+            --color 1d76db --force
+          existing="$(gh issue list --label upstream-release \
+              --state open --json number --jq '.[0].number' || true)"
+          body="$(cat <<EOF
+          NetEase published or currently serves **${VERSION}** (${FILENAME}).
+
+          Static adapter probe: **${PROBE}**.
+
+          - [x] Download and run the static API-contract probe
+          - [ ] Run the Wine hook and frame canary against the real binaries
+          - [ ] Confirm the wevtapi/uur-hook preload chain still loads
+          - [ ] If adaptation code changes: tag uur and publish all package formats
+          - [ ] If probes fail: document which contract changed
+          EOF
+          )"
+          if [[ -n "$existing" ]]; then
+            gh issue comment "$existing" --body "Still tracking: ${VERSION} (${FILENAME})"
+          else
+            gh issue create --label upstream-release \
+              --title "Upstream UU Remote ${VERSION} detected" --body "$body"
+          fi

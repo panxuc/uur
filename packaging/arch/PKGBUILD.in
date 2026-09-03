@@ -1,0 +1,27 @@
+pkgname=uur
+pkgver=@UUR_VERSION@
+pkgrel=1
+pkgdesc="Native Linux companion for NetEase UU Remote"
+arch=('x86_64')
+url="https://github.com/panxuc/uur"
+license=('MIT')
+depends=('glibc' 'gcc-libs' 'glib2' 'wine' 'curl' 'pipewire' 'xdg-desktop-portal')
+optdepends=(
+    'xdg-desktop-portal-gnome: GNOME-compatible Wayland capture and input'
+    'xdg-desktop-portal-kde: Plasma Wayland capture and input'
+    'xdg-desktop-portal-hyprland: Hyprland screen capture'
+    'xdg-desktop-portal-wlr: wlroots screen capture'
+    'xwayland-satellite: X11 application support on compositors without XWayland'
+    'ethtool: inspect and configure Wake-on-LAN'
+    'networkmanager: persist Wake-on-LAN for NetworkManager connections'
+    'pulseaudio: legacy PulseAudio server for Wine audio'
+    'pipewire-pulse: PulseAudio-compatible Wine audio on PipeWire'
+    'libva-utils: VA-API capability diagnostics'
+    'vulkan-tools: Vulkan and Vulkan Video capability diagnostics'
+    'nvidia-utils: NVENC and NVDEC capability diagnostics on NVIDIA GPUs'
+)
+install=uur.install
+
+package() {
+    "@UUR_PROJECT_ROOT@/packaging/stage.sh" "$pkgdir"
+}

@@ -1,0 +1,10 @@
+uur is original code, MIT licensed.
+
+Design ideas were learned from and are credited to:
+- GuoWQ222/uu-remote-for-linux (0BSD) — the wevtapi preload chain and the
+  PipeWire/portal approach to Wayland capture.
+- lachlanchen/uu-remote-ubuntu-bridge (MIT) — the reverse-engineering
+  record of UU Remote's SendInput and EvtOpenPublisherMetadata behaviour.
+
+NetEase UU Remote is proprietary software of NetEase; uur neither
+redistributes nor modifies it on disk.
