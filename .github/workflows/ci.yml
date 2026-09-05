@@ -80,4 +80,5 @@ jobs:
       - name: Evaluate and build the flake
         run: |
           nix flake check --no-build
-          nix build .#uur
+          CARGO_BUILD_JOBS=1 NIX_BUILD_CORES=1 \
+            nix build .#uur --max-jobs 1 --cores 1

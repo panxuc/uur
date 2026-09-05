@@ -4,8 +4,9 @@ set -euo pipefail
 project_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 destination=${1:?usage: packaging/stage.sh DESTDIR [PREFIX]}
 prefix=${2-/usr}
+uur_binary=${UUR_BINARY:-$project_root/target/release/uur}
 
-install -Dm0755 "$project_root/target/release/uur" \
+install -Dm0755 "$uur_binary" \
     "$destination$prefix/bin/uur"
 install -Dm0755 "$project_root/capture/uur-pw-capture" \
     "$destination$prefix/lib/uur/uur-pw-capture"

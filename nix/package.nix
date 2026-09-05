@@ -41,6 +41,10 @@ rustPlatform.buildRustPackage {
   UUR_BUILD_SHELL = runtimeShell;
   doCheck = false;
 
+  postPatch = ''
+    patchShebangs hook/build.sh capture/build.sh packaging/stage.sh
+  '';
+
   postBuild = ''
     UU_MINGW_CC=${windowsCC}/bin/${targetPrefix}cc \
     UU_MINGW_STRIP=${windowsBinutils}/bin/${targetPrefix}strip \
@@ -51,7 +55,8 @@ rustPlatform.buildRustPackage {
 
   installPhase = ''
     runHook preInstall
-    ./packaging/stage.sh "$out" ""
+    UUR_BINARY=target/${stdenv.hostPlatform.rust.rustcTarget}/release/uur \
+      ./packaging/stage.sh "$out" ""
     wrapProgram "$out/bin/uur" \
       --prefix PATH : ${lib.makeBinPath [
         curl
