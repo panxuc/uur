@@ -135,28 +135,35 @@ jobs:
         env:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
         run: |
-          install -d -m0700 "$HOME/.ssh"
-          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$HOME/.ssh/aur"
-          chmod 0600 "$HOME/.ssh/aur"
-          ssh-keyscan -H aur.archlinux.org > "$HOME/.ssh/known_hosts"
-          chmod 0600 "$HOME/.ssh/known_hosts"
-          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
-          git clone ssh://aur@aur.archlinux.org/uur.git aur
-          cp packaging/aur/PKGBUILD packaging/aur/uur.install aur/
-          version="${RELEASE_TAG#v}"
-          sed -i "s/^pkgver=.*/pkgver=$version/" aur/PKGBUILD
-          source_url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${RELEASE_TAG}.tar.gz"
-          digest="$(curl -fsSL "$source_url" | sha256sum | cut -d' ' -f1)"
-          sed -i "s/^sha256sums=.*/sha256sums=('$digest')/" aur/PKGBUILD
           useradd --create-home builder
-          chown -R builder:builder aur
-          runuser -u builder -- bash -lc 'cd "$1" && makepkg --printsrcinfo > .SRCINFO' _ "$PWD/aur"
-          git -C aur config user.name uur-release-bot
-          git -C aur config user.email actions@users.noreply.github.com
-          git -C aur add PKGBUILD uur.install .SRCINFO
-          if git -C aur diff --cached --quiet; then
-            echo "AUR metadata is already current"
-            exit 0
-          fi
-          git -C aur commit -m "uur $version"
-          git -C aur push
+          install -d -o builder -g builder -m0700 /home/builder/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > /home/builder/.ssh/aur
+          ssh-keyscan -H aur.archlinux.org > /home/builder/.ssh/known_hosts
+          chown builder:builder /home/builder/.ssh/aur /home/builder/.ssh/known_hosts
+          chmod 0600 /home/builder/.ssh/aur /home/builder/.ssh/known_hosts
+          git_ssh='ssh -i /home/builder/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/home/builder/.ssh/known_hosts'
+          runuser -u builder -- env \
+            HOME=/home/builder \
+            GIT_SSH_COMMAND="$git_ssh" \
+            RELEASE_TAG="$RELEASE_TAG" \
+            GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+            bash -lc '
+              git clone ssh://aur@aur.archlinux.org/uur.git "$HOME/aur"
+              cp "$1/packaging/aur/PKGBUILD" "$1/packaging/aur/uur.install" "$HOME/aur/"
+              cd "$HOME/aur"
+              version="${RELEASE_TAG#v}"
+              sed -i "s/^pkgver=.*/pkgver=$version/" PKGBUILD
+              source_url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${RELEASE_TAG}.tar.gz"
+              digest="$(curl -fsSL "$source_url" | sha256sum | cut -d" " -f1)"
+              sed -i "s/^sha256sums=.*/sha256sums=(\"$digest\")/" PKGBUILD
+              makepkg --printsrcinfo > .SRCINFO
+              git config user.name uur-release-bot
+              git config user.email actions@users.noreply.github.com
+              git add PKGBUILD uur.install .SRCINFO
+              if git diff --cached --quiet; then
+                echo "AUR metadata is already current"
+                exit 0
+              fi
+              git commit -m "uur $version"
+              git push
+            ' _ "$GITHUB_WORKSPACE"
