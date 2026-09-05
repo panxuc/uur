@@ -14,12 +14,18 @@ on:
         required: false
         default: false
         type: boolean
+      only_aur:
+        description: Skip package builds and only publish AUR metadata
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
 
 jobs:
   conventional-packages:
+    if: ${{ !inputs.only_aur }}
     runs-on: ubuntu-22.04
     env:
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
@@ -57,6 +63,7 @@ jobs:
           if-no-files-found: error
 
   arch-package:
+    if: ${{ !inputs.only_aur }}
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     steps:
@@ -89,6 +96,7 @@ jobs:
 
   publish:
     needs: [conventional-packages, arch-package]
+    if: ${{ !inputs.only_aur }}
     runs-on: ubuntu-latest
     env:
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
@@ -112,7 +120,9 @@ jobs:
     needs: publish
     runs-on: ubuntu-latest
     container: archlinux:base-devel
-    if: ${{ github.event_name == 'release' || inputs.publish_aur }}
+    if: >-
+      ${{ always() && (github.event_name == 'release' || inputs.publish_aur)
+          && (inputs.only_aur || needs.publish.result == 'success') }}
     env:
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
@@ -125,9 +135,12 @@ jobs:
         env:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
         run: |
-          install -Dm0600 /dev/null ~/.ssh/aur
-          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur
-          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
+          install -d -m0700 "$HOME/.ssh"
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$HOME/.ssh/aur"
+          chmod 0600 "$HOME/.ssh/aur"
+          ssh-keyscan -H aur.archlinux.org > "$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
           git clone ssh://aur@aur.archlinux.org/uur.git aur
           cp packaging/aur/PKGBUILD packaging/aur/uur.install aur/
           version="${RELEASE_TAG#v}"
@@ -146,4 +159,4 @@ jobs:
             exit 0
           fi
           git -C aur commit -m "uur $version"
-          GIT_SSH_COMMAND='ssh -i ~/.ssh/aur -o IdentitiesOnly=yes' git -C aur push
+          git -C aur push
