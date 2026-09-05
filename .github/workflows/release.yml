@@ -1,9 +1,14 @@
 name: release
 
 on:
-  push:
-    tags: ['v*']
+  release:
+    types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing GitHub Release tag to rebuild
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -11,8 +16,12 @@ permissions:
 jobs:
   packages:
     runs-on: ubuntu-22.04
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
       - uses: dtolnay/rust-toolchain@stable
       - name: Install build dependencies
         run: |
@@ -30,7 +39,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "${GITHUB_REF_NAME}" \
+          gh release upload "$RELEASE_TAG" \
             dist/*.tar.zst dist/*.deb dist/*.rpm dist/SHA256SUMS \
             --clobber
 
@@ -38,9 +47,13 @@ jobs:
     needs: packages
     runs-on: ubuntu-latest
     container: archlinux:base-devel
-    if: ${{ github.event_name == 'push' }}
+    if: ${{ github.event_name == 'release' }}
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
       - name: Install publication tools
         run: pacman -Syu --noconfirm curl git openssh
       - name: Publish AUR metadata
@@ -52,9 +65,9 @@ jobs:
           ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
           git clone ssh://aur@aur.archlinux.org/uur.git aur
           cp packaging/aur/PKGBUILD packaging/aur/uur.install aur/
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           sed -i "s/^pkgver=.*/pkgver=$version/" aur/PKGBUILD
-          source_url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          source_url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${RELEASE_TAG}.tar.gz"
           digest="$(curl -fsSL "$source_url" | sha256sum | cut -d' ' -f1)"
           sed -i "s/^sha256sums=.*/sha256sums=('$digest')/" aur/PKGBUILD
           useradd --create-home builder
