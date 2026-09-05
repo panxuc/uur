@@ -77,7 +77,7 @@ jobs:
             CARGO_BUILD_JOBS=2 cargo build --release --locked
             ./hook/build.sh
             ./capture/build.sh
-            ./packaging/build-arch-package.sh dist
+            ./packaging/build-arch-package.sh "$1/dist"
           ' _ "$GITHUB_WORKSPACE"
       - uses: actions/upload-artifact@v4
         with:
