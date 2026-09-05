@@ -30,9 +30,16 @@ jobs:
             binutils-mingw-w64-x86-64 gcc libpipewire-0.3-dev \
             gcc-mingw-w64-x86-64 pkg-config zstd
       - name: Install nFPM
-        uses: goreleaser/nfpm-action@v2
-        with:
-          version: latest
+        env:
+          NFPM_VERSION: 2.47.0
+        run: |
+          base="https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}"
+          archive="nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          curl -fsSLO "$base/$archive"
+          curl -fsSLO "$base/checksums.txt"
+          grep "  $archive$" checksums.txt | sha256sum --check --strict
+          sudo tar -xzf "$archive" -C /usr/local/bin nfpm
+          nfpm --version
       - name: Build distribution packages
         run: ./packaging/build-packages.sh
       - name: Publish GitHub release assets
