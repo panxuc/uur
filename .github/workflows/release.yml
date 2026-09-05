@@ -9,12 +9,17 @@ on:
         description: Existing GitHub Release tag to rebuild
         required: true
         type: string
+      publish_aur:
+        description: Publish or refresh the AUR package metadata
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
 
 jobs:
-  packages:
+  conventional-packages:
     runs-on: ubuntu-22.04
     env:
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
@@ -42,25 +47,76 @@ jobs:
           nfpm --version
       - name: Build distribution packages
         run: ./packaging/build-packages.sh
-      - name: Publish GitHub release assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release upload "$RELEASE_TAG" \
-            dist/*.tar.zst dist/*.deb dist/*.rpm dist/SHA256SUMS \
-            --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: conventional-packages
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*-linux-*.tar.zst
+          if-no-files-found: error
 
-  aur:
-    needs: packages
+  arch-package:
     runs-on: ubuntu-latest
     container: archlinux:base-devel
-    if: ${{ github.event_name == 'release' }}
-    env:
-      RELEASE_TAG: ${{ github.event.release.tag_name }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+      - name: Install Arch build dependencies
+        run: |
+          pacman -Syu --noconfirm \
+            cargo rust gcc pkgconf pipewire \
+            mingw-w64-gcc mingw-w64-binutils
+      - name: Build native pacman package with makepkg
+        run: |
+          useradd --create-home builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          runuser -u builder -- bash -lc '
+            cd "$1"
+            CARGO_BUILD_JOBS=2 cargo build --release --locked
+            ./hook/build.sh
+            ./capture/build.sh
+            ./packaging/build-arch-package.sh dist
+          ' _ "$GITHUB_WORKSPACE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-package
+          path: |
+            dist/*.pkg.tar.zst
+            !dist/uur-debug-*.pkg.tar.zst
+          if-no-files-found: error
+
+  publish:
+    needs: [conventional-packages, arch-package]
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-package*'
+          path: release-assets
+          merge-multiple: true
+      - name: Generate combined checksums
+        working-directory: release-assets
+        run: sha256sum -- *.deb *.rpm *.tar.zst > SHA256SUMS
+      - name: Publish GitHub release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" release-assets/* --clobber
+
+  aur:
+    needs: publish
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    if: ${{ github.event_name == 'release' || inputs.publish_aur }}
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
       - name: Install publication tools
         run: pacman -Syu --noconfirm curl git openssh
       - name: Publish AUR metadata
@@ -83,5 +139,9 @@ jobs:
           git -C aur config user.name uur-release-bot
           git -C aur config user.email actions@users.noreply.github.com
           git -C aur add PKGBUILD uur.install .SRCINFO
+          if git -C aur diff --cached --quiet; then
+            echo "AUR metadata is already current"
+            exit 0
+          fi
           git -C aur commit -m "uur $version"
           GIT_SSH_COMMAND='ssh -i ~/.ssh/aur -o IdentitiesOnly=yes' git -C aur push
