@@ -1,11 +1,121 @@
 use anyhow::{Context, Result};
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::net::{TcpListener, TcpStream};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::config::Config;
 use crate::input;
 use crate::protocol::{self, RECORD_BYTES, RECORD_HELLO};
+
+struct SharedInput {
+    backend: Box<dyn input::InputBackend>,
+    keys: HashMap<u16, usize>,
+    buttons: HashMap<u16, usize>,
+}
+
+struct ConnectionInput {
+    shared: Arc<Mutex<SharedInput>>,
+    name: &'static str,
+    keys: HashSet<u16>,
+    buttons: HashSet<u16>,
+}
+
+impl ConnectionInput {
+    fn press(&mut self, code: u16, down: bool, keyboard: bool) -> Result<()> {
+        let mut shared = self.shared.lock().unwrap();
+        let held = if keyboard {
+            &mut self.keys
+        } else {
+            &mut self.buttons
+        };
+        let owners = if keyboard {
+            &shared.keys
+        } else {
+            &shared.buttons
+        };
+        let count = owners.get(&code).copied().unwrap_or(0);
+        if !down && !held.contains(&code) {
+            return Ok(());
+        }
+        if down || count <= 1 {
+            if keyboard {
+                shared.backend.key(code, down)?;
+            } else {
+                shared.backend.button(code, down)?;
+            }
+        }
+        let owners = if keyboard {
+            &mut shared.keys
+        } else {
+            &mut shared.buttons
+        };
+        if down {
+            if held.insert(code) {
+                *owners.entry(code).or_default() += 1;
+            }
+        } else {
+            held.remove(&code);
+            if count <= 1 {
+                owners.remove(&code);
+            } else {
+                owners.insert(code, count - 1);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl input::InputBackend for ConnectionInput {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    fn key(&mut self, code: u16, down: bool) -> Result<()> {
+        self.press(code, down, true)
+    }
+    fn button(&mut self, code: u16, down: bool) -> Result<()> {
+        self.press(code, down, false)
+    }
+    fn motion(&mut self, absolute: bool, x: i32, y: i32) -> Result<()> {
+        self.shared.lock().unwrap().backend.motion(absolute, x, y)
+    }
+    fn wheel(&mut self, horizontal: bool, delta: i32) -> Result<()> {
+        self.shared.lock().unwrap().backend.wheel(horizontal, delta)
+    }
+    fn release_all(&mut self) -> Result<()> {
+        let mut error = None;
+        for code in self.keys.clone() {
+            if let Err(e) = self.key(code, false) {
+                error = Some(e);
+            }
+        }
+        for code in self.buttons.clone() {
+            if let Err(e) = self.button(code, false) {
+                error = Some(e);
+            }
+        }
+        // A disconnected client must not retain ownership if a release fails.
+        let mut shared = self.shared.lock().unwrap();
+        for code in self.keys.drain() {
+            if let Some(count) = shared.keys.get_mut(&code) {
+                *count -= 1;
+                if *count == 0 {
+                    shared.keys.remove(&code);
+                }
+            }
+        }
+        for code in self.buttons.drain() {
+            if let Some(count) = shared.buttons.get_mut(&code) {
+                *count -= 1;
+                if *count == 0 {
+                    shared.buttons.remove(&code);
+                }
+            }
+        }
+        error.map_or(Ok(()), Err)
+    }
+}
 
 /// Print the X11 pointer position — the before/after observable for hook
 /// verification.
@@ -19,8 +129,8 @@ pub fn print_pointer() -> Result<()> {
     Ok(())
 }
 
-/// Serve the in-client hook: one authenticated loopback connection at a
-/// time, records dispatched to the selected input backend.
+/// Serve authenticated loopback hook connections, serializing individual
+/// input events without holding the backend lock while waiting for records.
 pub fn serve() -> Result<()> {
     let config = Config::load()?;
     let preferred =
@@ -29,7 +139,12 @@ pub fn serve() -> Result<()> {
     if let Some(path) = std::env::var_os("UUR_BACKEND_STATUS") {
         std::fs::write(path, selected.name()).context("writing backend status")?;
     }
-    let backend = std::sync::Arc::new(std::sync::Mutex::new(selected));
+    let backend_name = selected.name();
+    let backend = Arc::new(Mutex::new(SharedInput {
+        backend: selected,
+        keys: HashMap::new(),
+        buttons: HashMap::new(),
+    }));
     let backend_handle = backend.clone();
     let addr = format!("127.0.0.1:{}", config.bridge_port);
     let listener = TcpListener::bind(&addr).with_context(|| format!("binding {addr}"))?;
@@ -52,9 +167,16 @@ pub fn serve() -> Result<()> {
                 Ok(false) => return,
                 Err(_) => return,
             }
-            let mut guard = backend_handle.lock().unwrap();
-            println!("{}", t!("bridge.connected", backend = guard.name()));
-            match pump(&mut stream, guard.as_mut()) {
+            use input::InputBackend;
+            // Read sockets without holding the shared desktop input lock.
+            let mut connection = ConnectionInput {
+                shared: backend_handle,
+                name: backend_name,
+                keys: HashSet::new(),
+                buttons: HashSet::new(),
+            };
+            println!("{}", t!("bridge.connected", backend = connection.name()));
+            match pump(&mut stream, &mut connection) {
                 Ok(count) => {
                     println!("{}", t!("bridge.session_summary", count = count));
                     println!("{}", t!("bridge.disconnected_clean"));
@@ -66,7 +188,7 @@ pub fn serve() -> Result<()> {
                     );
                 }
             }
-            let _ = guard.release_all();
+            let _ = connection.release_all();
         });
     }
     Ok(())
@@ -164,4 +286,152 @@ fn tokens_differ(a: &[u8; 32], b: &[u8; 32]) -> bool {
         diff |= x ^ y;
     }
     diff != 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::input::InputBackend;
+    use std::io::Write;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    struct Recorder(mpsc::Sender<String>);
+    impl InputBackend for Recorder {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+        fn key(&mut self, code: u16, down: bool) -> Result<()> {
+            self.0.send(format!("key {code} {down}"))?;
+            Ok(())
+        }
+        fn button(&mut self, code: u16, down: bool) -> Result<()> {
+            self.0.send(format!("button {code} {down}"))?;
+            Ok(())
+        }
+        fn motion(&mut self, _: bool, _: i32, _: i32) -> Result<()> {
+            self.0.send("motion".into())?;
+            Ok(())
+        }
+        fn wheel(&mut self, _: bool, _: i32) -> Result<()> {
+            Ok(())
+        }
+        fn release_all(&mut self) -> Result<()> {
+            panic!("must release only owned inputs")
+        }
+    }
+
+    fn connection(shared: &Arc<Mutex<SharedInput>>) -> ConnectionInput {
+        ConnectionInput {
+            shared: shared.clone(),
+            name: "test",
+            keys: HashSet::new(),
+            buttons: HashSet::new(),
+        }
+    }
+
+    fn shared() -> (Arc<Mutex<SharedInput>>, mpsc::Receiver<String>) {
+        let (tx, rx) = mpsc::channel();
+        (
+            Arc::new(Mutex::new(SharedInput {
+                backend: Box::new(Recorder(tx)),
+                keys: HashMap::new(),
+                buttons: HashMap::new(),
+            })),
+            rx,
+        )
+    }
+
+    #[test]
+    fn idle_connection_does_not_block_another_connections_motion() {
+        let (shared, events) = shared();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let mut idle = connection(&shared);
+        let thread = thread::spawn(move || pump(&mut server, &mut idle).unwrap());
+        let mut packet = Vec::new();
+        for value in [
+            protocol::MAGIC,
+            1,
+            protocol::RECORD_MOUSE,
+            16,
+            protocol::RECORD_MOUSE,
+        ] {
+            packet.extend_from_slice(&value.to_le_bytes());
+        }
+        packet.extend_from_slice(&0xffffu16.to_le_bytes());
+        packet.extend_from_slice(&0u16.to_le_bytes());
+        packet.extend_from_slice(&1i32.to_le_bytes());
+        packet.extend_from_slice(&0i32.to_le_bytes());
+        client.write_all(&packet).unwrap();
+        assert_eq!(
+            events.recv_timeout(Duration::from_secs(2)).unwrap(),
+            "motion"
+        );
+        let mut other = connection(&shared);
+        let other_thread = thread::spawn(move || other.motion(false, 1, 0).unwrap());
+        let delivered = events.recv_timeout(Duration::from_secs(2));
+        drop(client);
+        thread.join().unwrap();
+        other_thread.join().unwrap();
+        assert_eq!(delivered.unwrap(), "motion");
+    }
+
+    #[test]
+    fn disconnect_preserves_keys_and_buttons_held_by_another_connection() {
+        let (shared, events) = shared();
+        let mut first = connection(&shared);
+        let mut second = connection(&shared);
+        first.key(65, true).unwrap();
+        second.key(65, true).unwrap();
+        first.button(1, true).unwrap();
+        second.button(1, true).unwrap();
+        first.release_all().unwrap();
+        assert_eq!(
+            events.try_iter().collect::<Vec<_>>(),
+            [
+                "key 65 true",
+                "key 65 true",
+                "button 1 true",
+                "button 1 true"
+            ]
+        );
+        second.release_all().unwrap();
+        assert_eq!(
+            events.try_iter().collect::<Vec<_>>(),
+            ["key 65 false", "button 1 false"]
+        );
+    }
+
+    #[test]
+    fn disconnect_forgets_ownership_when_backend_release_fails() {
+        let (shared, events) = shared();
+        let mut client = connection(&shared);
+        client.key(65, true).unwrap();
+        client.button(1, true).unwrap();
+        drop(events);
+        assert!(client.release_all().is_err());
+        assert!(client.keys.is_empty());
+        assert!(client.buttons.is_empty());
+        let shared = shared.lock().unwrap();
+        assert!(shared.keys.is_empty());
+        assert!(shared.buttons.is_empty());
+    }
+
+    #[test]
+    fn repeated_press_is_released_once_and_unowned_release_is_ignored() {
+        let (shared, events) = shared();
+        let mut first = connection(&shared);
+        let mut second = connection(&shared);
+        first.key(65, true).unwrap();
+        first.key(65, true).unwrap();
+        second.key(65, false).unwrap();
+        first.release_all().unwrap();
+        assert_eq!(
+            events.try_iter().collect::<Vec<_>>(),
+            ["key 65 true", "key 65 true", "key 65 false"]
+        );
+        assert!(shared.lock().unwrap().keys.is_empty());
+    }
 }
