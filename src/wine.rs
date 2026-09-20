@@ -141,13 +141,15 @@ pub fn setup(accept_eula: bool) -> Result<()> {
 /// - GameViewerServer.exe sees Windows 10 because current UU terminal builds
 ///   gate their ConPTY transport on the OS version. Native input and display
 ///   adapters handle the hardware capabilities separately;
+/// - the UU client and service prefer their bundled msvcp140 runtime. Wine 10's
+///   builtin implementation can stall UU 4.41 before the WebView starts;
 /// - the service must auto-start;
 /// - X11 focus/XIM tuning and CJK font substitution keep the controller
 ///   usable.
 type RegistryEntry = (String, Vec<(&'static str, &'static str, &'static str)>);
 
-pub fn apply_registry_compat(prefix: &Path) -> Result<()> {
-    let entries: Vec<RegistryEntry> = vec![
+fn registry_compat_entries() -> Vec<RegistryEntry> {
+    vec![
         (
             r#"Software\Wine\AppDefaults\msedgewebview2.exe"#.to_string(),
             vec![("Version", "REG_SZ", "win8")],
@@ -155,6 +157,14 @@ pub fn apply_registry_compat(prefix: &Path) -> Result<()> {
         (
             r#"Software\Wine\AppDefaults\GameViewerServer.exe"#.to_string(),
             vec![("Version", "REG_SZ", "win10")],
+        ),
+        (
+            r#"Software\Wine\AppDefaults\gameviewer.exe\DllOverrides"#.to_string(),
+            vec![("msvcp140", "REG_SZ", "native,builtin")],
+        ),
+        (
+            r#"Software\Wine\AppDefaults\GameViewerServer.exe\DllOverrides"#.to_string(),
+            vec![("msvcp140", "REG_SZ", "native,builtin")],
         ),
         (
             r"System\CurrentControlSet\Services\GameViewerService".to_string(),
@@ -175,15 +185,17 @@ pub fn apply_registry_compat(prefix: &Path) -> Result<()> {
                 ("MS Shell Dlg 2", "REG_SZ", "Noto Sans CJK SC"),
             ],
         ),
-    ];
+    ]
+}
 
-    for (key, values) in &entries {
+pub fn apply_registry_compat(prefix: &Path) -> Result<()> {
+    for (key, values) in registry_compat_entries() {
         let full = if key.starts_with("System") {
             format!("HKLM\\{key}")
         } else {
             format!("HKCU\\{key}")
         };
-        for (value, reg_type, data) in values {
+        for (value, reg_type, data) in &values {
             let _ = Command::new("wine")
                 .env("WINEPREFIX", prefix)
                 .env("WINEDEBUG", wine_debug())
@@ -404,6 +416,24 @@ fn purge_wine_shortcuts() {
         let name = entry.file_name().to_string_lossy().into_owned();
         if matches(&name) {
             let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::registry_compat_entries;
+
+    #[test]
+    fn bundled_cpp_runtime_is_preferred_for_both_uu_processes() {
+        let entries = registry_compat_entries();
+        for executable in ["gameviewer.exe", "GameViewerServer.exe"] {
+            let key = format!(r"Software\Wine\AppDefaults\{executable}\DllOverrides");
+            let values = entries
+                .iter()
+                .find_map(|(entry, values)| (entry == &key).then_some(values))
+                .unwrap_or_else(|| panic!("missing DLL overrides for {executable}"));
+            assert!(values.contains(&("msvcp140", "REG_SZ", "native,builtin")));
         }
     }
 }
