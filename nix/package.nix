@@ -23,7 +23,7 @@ let
 in
 rustPlatform.buildRustPackage {
   pname = "uur";
-  version = "0.1.1";
+  version = "0.1.2";
 
   src = lib.cleanSource ../.;
   cargoLock.lockFile = ../Cargo.lock;
