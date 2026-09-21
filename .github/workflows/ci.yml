@@ -20,6 +20,8 @@ jobs:
           cargo test --locked --all-targets
           cc -std=c11 -O2 -Wall -Wextra -Werror tests/frame-protocol.c -o /tmp/frame-protocol
           /tmp/frame-protocol
+          cc -std=c11 -O2 -Wall -Wextra -Werror tests/cursor-overlay.c -o /tmp/cursor-overlay
+          /tmp/cursor-overlay
       - name: Build
         run: cargo build --locked --release
 

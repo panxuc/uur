@@ -12,5 +12,8 @@ cargo test --manifest-path "$project_root/Cargo.toml" --all-targets
 cc -std=c11 -O2 -Wall -Wextra -Werror \
     "$project_root/tests/frame-protocol.c" -o "$temporary/frame-protocol"
 "$temporary/frame-protocol"
+cc -std=c11 -O2 -Wall -Wextra -Werror \
+    "$project_root/tests/cursor-overlay.c" -o "$temporary/cursor-overlay"
+"$temporary/cursor-overlay"
 "$project_root/hook/build.sh"
 "$project_root/capture/build.sh"

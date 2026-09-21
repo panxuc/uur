@@ -26,6 +26,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "cursor-overlay.h"
 #include "frame-protocol.h"
 
 #define UUR_MAGIC 0x50495555u
@@ -337,17 +338,12 @@ static void draw_cursor_overlay(HDC hdc_dest, int x, int y, int width, int heigh
 {
     CURSORINFO cursor;
     ICONINFO icon;
+    BITMAP mask;
     POINT position;
-    int virtual_x;
-    int virtual_y;
-    int cursor_x;
-    int cursor_y;
-    int output_x;
-    int output_y;
-    int cursor_width;
-    int cursor_height;
-    int hotspot_x;
-    int hotspot_y;
+    uur_cursor_rect source = {source_x, source_y, source_width, source_height};
+    uur_cursor_rect destination = {x, y, width, height};
+    uur_cursor_rect overlay;
+    uur_cursor_shape shape;
 
     if (hdc_dest == NULL || width <= 0 || height <= 0 || source_width <= 0 ||
         source_height <= 0 || source_is_screen_dc(hdc_dest))
@@ -365,43 +361,25 @@ static void draw_cursor_overlay(HDC hdc_dest, int x, int y, int width, int heigh
     if (cursor.hCursor == NULL)
         return;
 
-    virtual_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
-    virtual_y = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    cursor_x = position.x - virtual_x;
-    cursor_y = position.y - virtual_y;
-    if (cursor_x < source_x || cursor_y < source_y ||
-        cursor_x >= source_x + source_width ||
-        cursor_y >= source_y + source_height)
-        return;
-
-    output_x = x + (int)(((int64_t)(cursor_x - source_x) * width) /
-                         source_width);
-    output_y = y + (int)(((int64_t)(cursor_y - source_y) * height) /
-                         source_height);
-    cursor_width = GetSystemMetrics(SM_CXCURSOR);
-    cursor_height = GetSystemMetrics(SM_CYCURSOR);
-    if (cursor_width < 1)
-        cursor_width = 32;
-    if (cursor_height < 1)
-        cursor_height = 32;
-
     ZeroMemory(&icon, sizeof(icon));
     if (!GetIconInfo(cursor.hCursor, &icon))
         return;
-    hotspot_x = (int)(((int64_t)icon.xHotspot * width + source_width / 2) /
-                      source_width);
-    hotspot_y = (int)(((int64_t)icon.yHotspot * height + source_height / 2) /
-                      source_height);
-    cursor_width = (int)(((int64_t)cursor_width * width + source_width / 2) /
-                         source_width);
-    cursor_height = (int)(((int64_t)cursor_height * height + source_height / 2) /
-                          source_height);
-    if (cursor_width < 1)
-        cursor_width = 1;
-    if (cursor_height < 1)
-        cursor_height = 1;
-    DrawIconEx(hdc_dest, output_x - hotspot_x, output_y - hotspot_y,
-               cursor.hCursor, cursor_width, cursor_height, 0, NULL, DI_NORMAL);
+
+    /* GetIconInfo's mask holds the cursor's actual bitmap dimensions. For a
+     * monochrome cursor the AND/XOR masks are stacked vertically. */
+    if (icon.hbmMask != NULL &&
+        GetObjectW(icon.hbmMask, sizeof(mask), &mask) == sizeof(mask)) {
+        shape.x = position.x;
+        shape.y = position.y;
+        shape.width = mask.bmWidth;
+        shape.height = uur_cursor_bitmap_height(mask.bmHeight,
+                                                 icon.hbmColor != NULL);
+        shape.hotspot_x = (int)icon.xHotspot;
+        shape.hotspot_y = (int)icon.yHotspot;
+        if (uur_map_cursor_overlay(&source, &destination, &shape, &overlay))
+            DrawIconEx(hdc_dest, overlay.x, overlay.y, cursor.hCursor,
+                       overlay.width, overlay.height, 0, NULL, DI_NORMAL);
+    }
     if (icon.hbmColor != NULL)
         DeleteObject(icon.hbmColor);
     if (icon.hbmMask != NULL)
