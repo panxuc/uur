@@ -328,6 +328,86 @@ static BOOL source_is_screen_dc(HDC source)
            GetDeviceCaps(source, TECHNOLOGY) == DT_RASDISPLAY;
 }
 
+/* GDI screen captures do not include the X11 hardware cursor.  Keep the
+ * cursor visible in the fallback path used on X11 by compositing Wine's
+ * current cursor onto the capture destination after the desktop blit. */
+static void draw_cursor_overlay(HDC hdc_dest, int x, int y, int width, int height,
+                                int source_x, int source_y, int source_width,
+                                int source_height)
+{
+    CURSORINFO cursor;
+    ICONINFO icon;
+    POINT position;
+    int virtual_x;
+    int virtual_y;
+    int cursor_x;
+    int cursor_y;
+    int output_x;
+    int output_y;
+    int cursor_width;
+    int cursor_height;
+    int hotspot_x;
+    int hotspot_y;
+
+    if (hdc_dest == NULL || width <= 0 || height <= 0 || source_width <= 0 ||
+        source_height <= 0 || source_is_screen_dc(hdc_dest))
+        return;
+    ZeroMemory(&cursor, sizeof(cursor));
+    cursor.cbSize = sizeof(cursor);
+    if (!GetCursorInfo(&cursor) || !(cursor.flags & CURSOR_SHOWING) ||
+        !GetCursorPos(&position))
+        return;
+    /* Wine can report a visible cursor with a null handle until the first
+     * real window has selected a class cursor.  A generic arrow is preferable
+     * to dropping the cursor from the remote frame altogether. */
+    if (cursor.hCursor == NULL)
+        cursor.hCursor = LoadCursor(NULL, IDC_ARROW);
+    if (cursor.hCursor == NULL)
+        return;
+
+    virtual_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    virtual_y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    cursor_x = position.x - virtual_x;
+    cursor_y = position.y - virtual_y;
+    if (cursor_x < source_x || cursor_y < source_y ||
+        cursor_x >= source_x + source_width ||
+        cursor_y >= source_y + source_height)
+        return;
+
+    output_x = x + (int)(((int64_t)(cursor_x - source_x) * width) /
+                         source_width);
+    output_y = y + (int)(((int64_t)(cursor_y - source_y) * height) /
+                         source_height);
+    cursor_width = GetSystemMetrics(SM_CXCURSOR);
+    cursor_height = GetSystemMetrics(SM_CYCURSOR);
+    if (cursor_width < 1)
+        cursor_width = 32;
+    if (cursor_height < 1)
+        cursor_height = 32;
+
+    ZeroMemory(&icon, sizeof(icon));
+    if (!GetIconInfo(cursor.hCursor, &icon))
+        return;
+    hotspot_x = (int)(((int64_t)icon.xHotspot * width + source_width / 2) /
+                      source_width);
+    hotspot_y = (int)(((int64_t)icon.yHotspot * height + source_height / 2) /
+                      source_height);
+    cursor_width = (int)(((int64_t)cursor_width * width + source_width / 2) /
+                         source_width);
+    cursor_height = (int)(((int64_t)cursor_height * height + source_height / 2) /
+                          source_height);
+    if (cursor_width < 1)
+        cursor_width = 1;
+    if (cursor_height < 1)
+        cursor_height = 1;
+    DrawIconEx(hdc_dest, output_x - hotspot_x, output_y - hotspot_y,
+               cursor.hCursor, cursor_width, cursor_height, 0, NULL, DI_NORMAL);
+    if (icon.hbmColor != NULL)
+        DeleteObject(icon.hbmColor);
+    if (icon.hbmMask != NULL)
+        DeleteObject(icon.hbmMask);
+}
+
 /* Feed the newest desktop frame into the capture destination by drawing
  * our shared-memory frame with StretchDIBits.  Works regardless of the
  * destination bitmap type (DDB or DIB section). */
@@ -436,21 +516,32 @@ static BOOL try_capture_feed(HDC hdc_dest, int x, int y, DWORD rop,
 BOOL WINAPI hook_bit_blt(HDC hdc_dest, int x, int y, int width, int height,
                          HDC hdc_src, int x_src, int y_src, DWORD rop)
 {
+    BOOL result;
     if (try_capture_feed(hdc_dest, x, y, rop, hdc_src, width, height, x_src,
                          y_src, width, height))
         return TRUE;
-    return original_bit_blt(hdc_dest, x, y, width, height, hdc_src, x_src,
-                            y_src, rop);
+    result = original_bit_blt(hdc_dest, x, y, width, height, hdc_src, x_src,
+                              y_src, rop);
+    if (result && (rop & 0x00ffffffu) == SRCCOPY && hdc_src != NULL &&
+        source_is_screen_dc(hdc_src))
+        draw_cursor_overlay(hdc_dest, x, y, width, height, x_src, y_src,
+                            width, height);
+    return result;
 }
 
 BOOL WINAPI hook_stretch_blt(HDC hdc_dest, int x, int y, int w, int h,
                              HDC hdc_src, int xs, int ys, int sw, int sh,
                              DWORD rop)
 {
+    BOOL result;
     if (try_capture_feed(hdc_dest, x, y, rop, hdc_src, w, h, xs, ys, sw, sh))
         return TRUE;
-    return original_stretch_blt(hdc_dest, x, y, w, h, hdc_src, xs, ys, sw,
-                                sh, rop);
+    result = original_stretch_blt(hdc_dest, x, y, w, h, hdc_src, xs, ys, sw,
+                                  sh, rop);
+    if (result && (rop & 0x00ffffffu) == SRCCOPY && hdc_src != NULL &&
+        source_is_screen_dc(hdc_src))
+        draw_cursor_overlay(hdc_dest, x, y, w, h, xs, ys, sw, sh);
+    return result;
 }
 
 /* ---- diagnostics ------------------------------------------------------ */
