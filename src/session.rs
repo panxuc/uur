@@ -171,6 +171,22 @@ fn deploy_terminal_proxy(install_dir: &Path) -> Result<PathBuf> {
 
 /// The client UI needs the Evergreen WebView2 runtime; the official
 /// bootstrapper ships inside the client's bin directory.
+const WEBVIEW2_DLL_OVERRIDES: &str = "wtsapi32=b,wevtapi=b";
+
+fn webview2_install_command(prefix: &Path, bootstrapper: &Path) -> Command {
+    let mut command = Command::new("wine");
+    command
+        .env("WINEPREFIX", prefix)
+        .env("WINEDEBUG", wine_debug())
+        // The bootstrapper is a 32-bit process. uur's native preload DLLs are
+        // 64-bit, so inherited global native-only overrides make its updater
+        // unable to load WTSAPI32.dll under WoW64.
+        .env("WINEDLLOVERRIDES", WEBVIEW2_DLL_OVERRIDES)
+        .arg(bootstrapper)
+        .args(["/silent", "/install"]);
+    command
+}
+
 fn ensure_webview2(prefix: &Path, install_dir: &Path) -> Result<()> {
     let marker = prefix.join("drive_c/Program Files (x86)/Microsoft/EdgeWebView/Application");
     if marker.exists() {
@@ -183,11 +199,7 @@ fn ensure_webview2(prefix: &Path, install_dir: &Path) -> Result<()> {
         anyhow::bail!("{}", t!("session.webview_missing"));
     }
     println!("{}", t!("session.installing_webview"));
-    let status = Command::new("wine")
-        .env("WINEPREFIX", prefix)
-        .env("WINEDEBUG", wine_debug())
-        .arg(bootstrapper.to_string_lossy().as_ref())
-        .args(["/silent", "/install"])
+    let status = webview2_install_command(prefix, &bootstrapper)
         .status()
         .context("running the WebView2 bootstrapper")?;
     if !status.success() {
@@ -716,6 +728,20 @@ fn wine_debug() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn webview2_installer_uses_builtin_wow64_dlls() {
+        let command = webview2_install_command(
+            Path::new("/tmp/uur-wine-prefix"),
+            Path::new("/tmp/MicrosoftEdgeWebview2Setup.exe"),
+        );
+        let overrides = command
+            .get_envs()
+            .find_map(|(name, value)| (name == OsStr::new("WINEDLLOVERRIDES")).then_some(value))
+            .flatten();
+        assert_eq!(overrides, Some(OsStr::new(WEBVIEW2_DLL_OVERRIDES)));
+    }
 
     #[test]
     fn tasklist_parser_matches_the_exact_image() {
