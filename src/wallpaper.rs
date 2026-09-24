@@ -324,14 +324,9 @@ fn wpaperd_link() -> Option<PathBuf> {
 }
 
 fn link_target(link: &Path) -> Option<PathBuf> {
-    let target = std::fs::read_link(link).ok()?;
-    Some(if target.is_absolute() {
-        target
-    } else {
-        // wpaperd stores config-relative targets, resolved against its
-        // working directory, which is the user's home in practice.
-        home_dir().join(target)
-    })
+    // Let the filesystem resolve relative symlink targets from the link's
+    // parent directory, as required by symlink semantics.
+    link.canonicalize().ok()
 }
 
 fn wallpaper_from_value(value: &str, provider: &'static str) -> Option<Wallpaper> {
