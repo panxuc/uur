@@ -721,11 +721,23 @@ fn wait_for_runtime_file(path: &Path, stopping: &AtomicBool) -> Result<()> {
 }
 
 fn xft_dpi() -> Option<u32> {
-    let resources = run_with_timeout(
-        Command::new("xrdb").arg("-query"),
-        std::time::Duration::from_secs(2),
-    )?;
-    parse_xft_dpi(&resources)
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
+
+    let (connection, screen) = x11rb::connect(None).ok()?;
+    let root = connection.setup().roots.get(screen)?.root;
+    let resource_manager = connection
+        .intern_atom(false, b"RESOURCE_MANAGER")
+        .ok()?
+        .reply()
+        .ok()?
+        .atom;
+    let resource_manager = connection
+        .get_property(false, root, resource_manager, AtomEnum::STRING, 0, 16_384)
+        .ok()?
+        .reply()
+        .ok()?;
+    parse_xft_dpi(&String::from_utf8_lossy(&resource_manager.value))
 }
 
 fn parse_xft_dpi(resources: &str) -> Option<u32> {
