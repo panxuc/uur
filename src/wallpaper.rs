@@ -276,12 +276,13 @@ fn detect_runtime_provider() -> Option<PathBuf> {
             .and_then(OsStr::to_str)
             .unwrap_or_default();
         let candidate = match executable {
-            "swaybg" => argument_after(&arguments, "-i"),
-            "xwallpaper" => arguments.last().cloned(),
-            "mpvpaper" => arguments.last().cloned(),
+            "swaybg" => argument_after(&arguments, "-i").map(PathBuf::from),
+            "xwallpaper" => arguments.last().map(PathBuf::from),
+            "mpvpaper" => arguments.last().map(PathBuf::from),
+            "wpaperd" => wpaperd_link(),
             _ => None,
         };
-        if let Some(path) = candidate.and_then(|value| resolve_candidate(PathBuf::from(value))) {
+        if let Some(path) = candidate.and_then(resolve_candidate) {
             return Some(path);
         }
     }
@@ -301,6 +302,36 @@ fn argument_after(arguments: &[String], option: &str) -> Option<String> {
         .windows(2)
         .find(|pair| pair[0] == option)
         .map(|pair| pair[1].clone())
+}
+
+/// wpaperd >= 1.1.0 mirrors the current wallpaper of every output as a
+/// symlink under `$XDG_STATE_HOME/wpaperd/wallpapers`, rewritten on each
+/// change. The newest link wins; leftovers from earlier runs are older.
+fn wpaperd_link() -> Option<PathBuf> {
+    std::fs::read_dir(state_home().join("wpaperd/wallpapers"))
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let target = link_target(&entry.path())?;
+            let modified = std::fs::symlink_metadata(entry.path())
+                .ok()?
+                .modified()
+                .ok()?;
+            Some((modified, target))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, target)| target)
+}
+
+fn link_target(link: &Path) -> Option<PathBuf> {
+    let target = std::fs::read_link(link).ok()?;
+    Some(if target.is_absolute() {
+        target
+    } else {
+        // wpaperd stores config-relative targets, resolved against its
+        // working directory, which is the user's home in practice.
+        home_dir().join(target)
+    })
 }
 
 fn wallpaper_from_value(value: &str, provider: &'static str) -> Option<Wallpaper> {
@@ -543,6 +574,12 @@ fn config_home() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home_dir().join(".config"))
+}
+
+fn state_home() -> PathBuf {
+    std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".local/state"))
 }
 
 fn home_dir() -> PathBuf {
