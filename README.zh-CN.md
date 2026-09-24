@@ -149,6 +149,9 @@ uur display source virtual
 uur stop                # 只停止 uur 助手与专用 Wine 前缀
 ```
 
+从桌面启动 UU 后，可在启动器的应用操作菜单中选择“退出”；从终端运行时可执行
+`uur stop` 或按 Ctrl+C。
+
 输入后端排错：
 
 ```bash

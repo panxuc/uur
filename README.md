@@ -154,6 +154,10 @@ uur display source virtual
 uur stop                # Stop only uur's helpers and Wine prefix
 ```
 
+If UU was started from the desktop, choose **Quit** from the launcher's
+application actions. When running from a terminal, use `uur stop` or press
+Ctrl+C.
+
 Diagnostic input overrides:
 
 ```bash
