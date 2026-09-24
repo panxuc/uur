@@ -43,6 +43,7 @@ session:
   webview_failed: "WebView2 安装失败"
   quick_launch_ready: "已向 UU 快速启动导出 %{count} 个 Linux 应用"
   audio_backend: "Wine 音频后端：%{backend}"
+  wine_dpi: "已根据 Xft.dpi 设置 Wine 系统 DPI：%{dpi}"
 
 upstream:
   unreachable: "无法访问网易官方发布接口"

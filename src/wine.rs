@@ -239,6 +239,39 @@ pub fn set_dll_override(prefix: &Path, name: &str, mode: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn set_log_pixels(prefix: &Path, dpi: u32) -> Result<()> {
+    let status = log_pixels_command(prefix, dpi)
+        .status()
+        .context("setting the Wine system DPI")?;
+    if !status.success() {
+        anyhow::bail!("Wine rejected the system DPI value {dpi}");
+    }
+    Ok(())
+}
+
+fn log_pixels_command(prefix: &Path, dpi: u32) -> Command {
+    let mut command = Command::new("wine");
+    command
+        .env("WINEPREFIX", prefix)
+        .env("WINEDEBUG", wine_debug())
+        .args([
+            "reg",
+            "add",
+            r"HKCU\Control Panel\Desktop",
+            "/v",
+            "LogPixels",
+            "/t",
+            "REG_DWORD",
+            "/d",
+            &dpi.to_string(),
+            "/f",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
+}
+
 fn wine_debug() -> String {
     std::env::var("WINEDEBUG").unwrap_or_else(|_| "-all".to_string())
 }
@@ -422,7 +455,9 @@ fn purge_wine_shortcuts() {
 
 #[cfg(test)]
 mod tests {
+    use super::log_pixels_command;
     use super::registry_compat_entries;
+    use std::path::Path;
 
     #[test]
     fn bundled_cpp_runtime_is_preferred_for_both_uu_processes() {
@@ -435,5 +470,29 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing DLL overrides for {executable}"));
             assert!(values.contains(&("msvcp140", "REG_SZ", "native,builtin")));
         }
+    }
+
+    #[test]
+    fn system_dpi_command_writes_winecfg_logpixels_value() {
+        let command = log_pixels_command(Path::new("/tmp/wine-prefix"), 192);
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            [
+                "reg",
+                "add",
+                r"HKCU\Control Panel\Desktop",
+                "/v",
+                "LogPixels",
+                "/t",
+                "REG_DWORD",
+                "/d",
+                "192",
+                "/f",
+            ]
+        );
     }
 }

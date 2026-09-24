@@ -345,6 +345,12 @@ pub fn start() -> Result<()> {
     let prefix = data_dir()?.join("wine");
     let install_dir = crate::wine::find_client_dir(&prefix)
         .context("client not provisioned; run `uur setup` first")?;
+    if let Some(dpi) = xft_dpi() {
+        match crate::wine::set_log_pixels(&prefix, dpi) {
+            Ok(()) => println!("{}", t!("session.wine_dpi", dpi = dpi)),
+            Err(error) => eprintln!("could not sync Wine DPI from Xft.dpi: {error}"),
+        }
+    }
     deploy_hooks(&prefix)?;
     crate::wine::set_dll_override(&prefix, "wtsapi32", "native")?;
     // Re-apply migrations on every launch so an updated uur package repairs
@@ -714,6 +720,25 @@ fn wait_for_runtime_file(path: &Path, stopping: &AtomicBool) -> Result<()> {
     anyhow::bail!("native terminal bridge did not become ready")
 }
 
+fn xft_dpi() -> Option<u32> {
+    let resources = run_with_timeout(
+        Command::new("xrdb").arg("-query"),
+        std::time::Duration::from_secs(2),
+    )?;
+    parse_xft_dpi(&resources)
+}
+
+fn parse_xft_dpi(resources: &str) -> Option<u32> {
+    resources.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        if name.trim() != "Xft.dpi" {
+            return None;
+        }
+        let dpi = value.trim().parse::<f64>().ok()?;
+        (dpi.is_finite() && (96.0..=480.0).contains(&dpi)).then(|| dpi.round() as u32)
+    })
+}
+
 fn stop_wineserver(prefix: &Path) {
     let _ = Command::new("wineserver")
         .env("WINEPREFIX", prefix)
@@ -729,6 +754,20 @@ fn wine_debug() -> String {
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    #[test]
+    fn parses_xft_dpi_resources() {
+        assert_eq!(parse_xft_dpi("Xft.antialias: 1\nXft.dpi: 192\n"), Some(192));
+        assert_eq!(parse_xft_dpi("Xft.dpi: 168.4\n"), Some(168));
+    }
+
+    #[test]
+    fn ignores_invalid_xft_dpi_resources() {
+        assert_eq!(parse_xft_dpi("Xft.dpi: 72\n"), None);
+        assert_eq!(parse_xft_dpi("Xft.dpi: 500\n"), None);
+        assert_eq!(parse_xft_dpi("Xft.dpi: automatic\n"), None);
+        assert_eq!(parse_xft_dpi("Xft.antialias: 192\n"), None);
+    }
 
     #[test]
     fn webview2_installer_uses_builtin_wow64_dlls() {

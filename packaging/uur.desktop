@@ -9,6 +9,13 @@ Comment[zh_CN]=在本 Linux 桌面启动完整的 UU 远程会话
 Exec=uur run
 TryExec=uur
 Icon=uur
+StartupWMClass=gameviewer.exe
 Terminal=false
 Categories=Network;RemoteAccess;
 Keywords=remote;desktop;uu;网易;远程;
+Actions=Quit;
+
+[Desktop Action Quit]
+Name=Quit
+Name[zh_CN]=退出
+Exec=uur stop

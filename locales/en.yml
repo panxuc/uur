@@ -55,6 +55,7 @@ session:
   webview_failed: "WebView2 installation failed"
   quick_launch_ready: "%{count} Linux applications exported to UU Quick Launch"
   audio_backend: "Wine audio backend: %{backend}"
+  wine_dpi: "Wine system DPI set from Xft.dpi: %{dpi}"
 
 setup:
   eula_prompt: "The official UU Remote client will be downloaded from NetEase and is governed by their EULA: %{url}\nRe-run with --accept-eula to continue."
