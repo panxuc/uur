@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::unix::io::AsRawFd;
+use std::time::{Duration, Instant};
 
 use super::InputBackend;
 
@@ -254,15 +255,35 @@ pub struct UinputBackend {
     devices: Devices,
     held_keys: HashSet<u16>,
     held_buttons: HashSet<u16>,
+    clipboard: Option<zbus::blocking::Proxy<'static>>,
 }
 
 impl UinputBackend {
     pub fn connect() -> Result<Self> {
         let devices = Devices::create()?;
+        let clipboard =
+            if std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|desktop| desktop.contains("KDE")) {
+                zbus::blocking::Connection::session().ok().and_then(|bus| {
+                    zbus::blocking::Proxy::new_owned(
+                        bus,
+                        "org.kde.klipper",
+                        "/klipper",
+                        "org.kde.klipper.klipper",
+                    )
+                    .ok()
+                })
+            } else {
+                None
+            };
+        if let Some(clipboard) = clipboard.as_ref() {
+            let _: std::result::Result<String, zbus::Error> =
+                clipboard.call("getClipboardContents", &());
+        }
         Ok(Self {
             devices,
             held_keys: HashSet::new(),
             held_buttons: HashSet::new(),
+            clipboard,
         })
     }
 }
@@ -286,6 +307,48 @@ impl InputBackend for UinputBackend {
             self.held_keys.remove(&code);
         }
         Ok(())
+    }
+
+    fn text(&mut self, character: char) -> Result<()> {
+        let clipboard = self
+            .clipboard
+            .as_ref()
+            .context("KDE clipboard service is unavailable")?
+            .clone();
+        let started = Instant::now();
+        let value = character.to_string();
+        let previous: String = clipboard.call("getClipboardContents", &())?;
+        let _: () = clipboard.call("setClipboardContents", &(value.as_str(),))?;
+        std::thread::sleep(Duration::from_millis(25));
+
+        let ctrl_held = self.held_keys.contains(&(linux::KEY_LEFTCTRL as u16));
+        let result = (|| -> Result<()> {
+            if !ctrl_held {
+                self.key(0x11, true)?;
+            }
+            self.key(0x56, true)?;
+            self.key(0x56, false)?;
+            if !ctrl_held {
+                self.key(0x11, false)?;
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = self.key(0x56, false);
+            if !ctrl_held {
+                let _ = self.key(0x11, false);
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(150));
+        let current: String = clipboard.call("getClipboardContents", &())?;
+        if current == value {
+            let _: () = clipboard.call("setClipboardContents", &(previous.as_str(),))?;
+        }
+        if started.elapsed() > Duration::from_millis(500) {
+            eprintln!("text paste took {} ms", started.elapsed().as_millis());
+        }
+        result
     }
 
     fn button(&mut self, button: u16, down: bool) -> Result<()> {

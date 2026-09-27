@@ -11,7 +11,7 @@
 | Wayland monitor/window selection | available | Persistent portal source selection |
 | Wayland virtual source | available when advertised | `uur display source virtual` → ScreenCast Virtual source |
 | Independent Wayland multi-screen switching | in progress | Multiple PipeWire streams → UU display topology adapter |
-| Phone IME text on KDE Wayland | partial | Unicode SendInput bridge → Klipper text clipboard → portal paste; previous text clipboard is restored |
+| Phone IME text on KDE Wayland | partial | Unicode SendInput bridge → Klipper text clipboard → portal or uinput paste; previous text clipboard is restored |
 | Full clipboard synchronization | planned | Clipboard portal and X11 selections, including non-text formats |
 | Speaker and microphone audio | available through Wine | PulseAudio, pipewire-pulse, or ALSA selected from live capabilities |
 | System-audio loopback and remote mute | Wine integration | WASAPI → winepulse/winealsa |
@@ -21,7 +21,7 @@
 | Desktop wallpaper | available | Capability providers → Wine desktop metadata |
 | Prevent suspend/idle | available | Inhibit portal, scoped to `uur run` |
 | System proxy | available | Standard proxy environment → Wine WinINet settings |
-| Login autostart | available | User-controlled XDG autostart entry |
+| Login autostart | available | User-controlled XDG autostart entry; unattended KDE sessions can use uinput with a restored ScreenCast source |
 | Wake-on-LAN host setup | available | Physical-interface discovery → ethtool/NetworkManager configuration |
 | Wake button in UU cloud UI | planned | Stable server capability API integration |
 | VA-API capability | detected | DRM render nodes + `vainfo` |

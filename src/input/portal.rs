@@ -185,6 +185,10 @@ async fn portal_worker(
     } else {
         None
     };
+    if let Some(clipboard) = clipboard.as_ref() {
+        let _: std::result::Result<String, zbus::Error> =
+            clipboard.call("getClipboardContents", &()).await;
+    }
     let token = selection.restore_token().map(ToOwned::to_owned);
     ready
         .send(Ok(token))

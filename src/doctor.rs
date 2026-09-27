@@ -313,16 +313,23 @@ pub fn report() -> Result<()> {
     let uinput_missing = uinput_detail != t!("doctor.present");
     line(ok(uinput_missing), "uinput (/dev/uinput)", &uinput_detail);
 
-    // Mirror the real auto policy in input::select.
+    // Mirror input::select, including an explicitly configured backend.
     let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
-    let (backend, backend_note) = if session_type == "wayland" && portal_input {
-        ("portal", t!("doctor.backend_portal").to_string())
-    } else if session_type == "wayland" && !uinput_missing {
-        ("uinput", t!("doctor.backend_wayland").to_string())
-    } else if std::env::var("DISPLAY").is_ok() {
-        ("xtest", t!("doctor.backend_x11").to_string())
-    } else {
-        ("none", t!("doctor.backend_none").to_string())
+    let preferred = crate::config::Config::load()
+        .map(|config| config.input_backend)
+        .unwrap_or_else(|_| "auto".to_string());
+    let (backend, backend_note) = match preferred.as_str() {
+        "portal" => ("portal", t!("doctor.backend_portal").to_string()),
+        "uinput" => ("uinput", t!("doctor.backend_wayland").to_string()),
+        "xtest" => ("xtest", t!("doctor.backend_x11").to_string()),
+        _ if session_type == "wayland" && portal_input => {
+            ("portal", t!("doctor.backend_portal").to_string())
+        }
+        _ if session_type == "wayland" && !uinput_missing => {
+            ("uinput", t!("doctor.backend_wayland").to_string())
+        }
+        _ if std::env::var("DISPLAY").is_ok() => ("xtest", t!("doctor.backend_x11").to_string()),
+        _ => ("none", t!("doctor.backend_none").to_string()),
     };
     line(
         "info",
