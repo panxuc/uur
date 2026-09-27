@@ -74,6 +74,9 @@ impl input::InputBackend for ConnectionInput {
     fn key(&mut self, code: u16, down: bool) -> Result<()> {
         self.press(code, down, true)
     }
+    fn text(&mut self, character: char) -> Result<()> {
+        self.shared.lock().unwrap().backend.text(character)
+    }
     fn button(&mut self, code: u16, down: bool) -> Result<()> {
         self.press(code, down, false)
     }
@@ -219,6 +222,7 @@ fn pump(stream: &mut TcpStream, backend: &mut dyn input::InputBackend) -> Result
     let mut header = [0u8; protocol::HEADER_BYTES];
     let mut record = [0u8; RECORD_BYTES];
     let mut injected: u64 = 0;
+    let mut high_surrogate: Option<u16> = None;
     loop {
         // EOF is the hook exiting: a clean disconnect, not an error.
         match stream.read_exact(&mut header) {
@@ -233,10 +237,21 @@ fn pump(stream: &mut TcpStream, backend: &mut dyn input::InputBackend) -> Result
             anyhow::bail!("bad magic");
         }
         match header.kind {
-            protocol::RECORD_MOUSE | protocol::RECORD_KEYBOARD => {
+            protocol::RECORD_MOUSE | protocol::RECORD_KEYBOARD | protocol::RECORD_UNICODE => {
                 stream.read_exact(&mut record)?;
                 let record = protocol::read_record(&record);
-                dispatch(backend, &record)?;
+                if record.kind == protocol::RECORD_UNICODE {
+                    if record.state == 1 {
+                        if let Some(character) = decode_utf16_unit(&mut high_surrogate, record.code)
+                        {
+                            if let Err(error) = backend.text(character) {
+                                eprintln!("text injection failed: {error}");
+                            }
+                        }
+                    }
+                } else if let Err(error) = dispatch(backend, &record) {
+                    eprintln!("input injection failed: {error}");
+                }
                 injected += 1;
             }
             _ => {
@@ -247,6 +262,20 @@ fn pump(stream: &mut TcpStream, backend: &mut dyn input::InputBackend) -> Result
             }
         }
     }
+}
+
+fn decode_utf16_unit(high_surrogate: &mut Option<u16>, unit: u16) -> Option<char> {
+    if (0xd800..=0xdbff).contains(&unit) {
+        *high_surrogate = Some(unit);
+        return None;
+    }
+    if let Some(high) = high_surrogate.take() {
+        if (0xdc00..=0xdfff).contains(&unit) {
+            let codepoint = 0x10000 + (((high - 0xd800) as u32) << 10) + (unit - 0xdc00) as u32;
+            return char::from_u32(codepoint);
+        }
+    }
+    char::from_u32(unit as u32)
 }
 
 fn dispatch(backend: &mut dyn input::InputBackend, record: &protocol::Record) -> Result<()> {
@@ -296,13 +325,31 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
+    #[test]
+    fn unicode_input_decodes_utf16_units() {
+        let mut high = None;
+        assert_eq!(decode_utf16_unit(&mut high, 'A' as u16), Some('A'));
+        assert_eq!(decode_utf16_unit(&mut high, 0x4e2d), Some('中'));
+        assert_eq!(decode_utf16_unit(&mut high, 0xd83d), None);
+        assert_eq!(decode_utf16_unit(&mut high, 0xde00), Some('😀'));
+        assert_eq!(high, None);
+        assert_eq!(decode_utf16_unit(&mut high, 0xdc00), None);
+    }
+
     struct Recorder(mpsc::Sender<String>);
     impl InputBackend for Recorder {
         fn name(&self) -> &'static str {
             "test"
         }
         fn key(&mut self, code: u16, down: bool) -> Result<()> {
+            if code == 0 {
+                anyhow::bail!("invalid key");
+            }
             self.0.send(format!("key {code} {down}"))?;
+            Ok(())
+        }
+        fn text(&mut self, character: char) -> Result<()> {
+            self.0.send(format!("text {character}"))?;
             Ok(())
         }
         fn button(&mut self, code: u16, down: bool) -> Result<()> {
@@ -340,6 +387,39 @@ mod tests {
             })),
             rx,
         )
+    }
+
+    #[test]
+    fn invalid_key_does_not_interrupt_unicode_input() {
+        let (shared, events) = shared();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let mut backend = connection(&shared);
+        let thread = thread::spawn(move || pump(&mut server, &mut backend).unwrap());
+        for (kind, code) in [
+            (protocol::RECORD_KEYBOARD, 0),
+            (protocol::RECORD_UNICODE, 'A' as u16),
+            (protocol::RECORD_UNICODE, 0xd83d),
+            (protocol::RECORD_UNICODE, 0xde00),
+            (protocol::RECORD_KEYBOARD, 66),
+        ] {
+            let mut packet = Vec::new();
+            for value in [protocol::MAGIC, protocol::VERSION, kind, 16, kind] {
+                packet.extend_from_slice(&value.to_le_bytes());
+            }
+            packet.extend_from_slice(&code.to_le_bytes());
+            packet.extend_from_slice(&1u16.to_le_bytes());
+            packet.extend_from_slice(&0i32.to_le_bytes());
+            packet.extend_from_slice(&0i32.to_le_bytes());
+            client.write_all(&packet).unwrap();
+        }
+        drop(client);
+        assert_eq!(thread.join().unwrap(), 5);
+        assert_eq!(
+            events.try_iter().collect::<Vec<_>>(),
+            ["text A", "text 😀", "key 66 true"]
+        );
     }
 
     #[test]

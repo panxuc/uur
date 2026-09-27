@@ -13,7 +13,7 @@
  * contained inside the managed Wine prefix.
  *
  * Wire format mirrors src/protocol.rs: 16-byte record
- *   u32 kind (1 keyboard, 2 mouse) u16 code u16 state i32 a i32 b
+ *   u32 kind (1 keyboard, 2 mouse, 4 UTF-16) u16 code u16 state i32 a i32 b
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -34,6 +34,7 @@
 #define UUR_RECORD_HELLO 1u
 #define UUR_RECORD_MOUSE 2u
 #define UUR_RECORD_KEYBOARD 3u
+#define UUR_RECORD_UNICODE 4u
 
 static UINT(WINAPI *original_send_input)(UINT, LPINPUT, int);
 static HRESULT(WINAPI *original_create_dxgi_factory1)(REFIID, void **);
@@ -764,7 +765,22 @@ UINT WINAPI hook_send_input(UINT count, LPINPUT inputs, int size)
         for (UINT i = 0; i < count; ++i) {
             LPINPUT input = &inputs[i];
             if (input->type == INPUT_KEYBOARD) {
+                DWORD flags = input->ki.dwFlags;
+                if (flags & KEYEVENTF_UNICODE) {
+                    if (input->ki.wScan != 0)
+                        send_record(UUR_RECORD_UNICODE, input->ki.wScan,
+                                    (flags & KEYEVENTF_KEYUP) ? 0 : 1, 0, 0);
+                    continue;
+                }
                 uint16_t code = input->ki.wVk;
+                if (flags & KEYEVENTF_SCANCODE) {
+                    UINT scan = input->ki.wScan;
+                    if (flags & KEYEVENTF_EXTENDEDKEY)
+                        scan |= 0xe000u;
+                    code = (uint16_t)MapVirtualKeyW(scan, MAPVK_VSC_TO_VK_EX);
+                }
+                if (code == 0)
+                    continue;
                 if (input->ki.dwFlags & KEYEVENTF_EXTENDEDKEY)
                     code |= 0x100;
                 send_record(UUR_RECORD_KEYBOARD, code,

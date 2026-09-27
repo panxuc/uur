@@ -198,7 +198,11 @@ native Linux service adapters rather than being left inside the Wine prefix:
 | Received files | Validated staging → the user's XDG Downloads directory |
 | Sending files | File portal or explicit CLI selection → bounded native staging |
 | Port mapping | Policy-controlled native TCP/UDP broker; loopback by default |
-| Clipboard and phone text | RemoteDesktop Clipboard portal with X11 fallback |
+| Clipboard and phone text | KDE Wayland phone text uses a temporary Klipper paste; full clipboard synchronization is planned |
+
+On KDE Wayland, non-ASCII phone text briefly replaces the text clipboard and
+may enter Klipper history. The previous plain-text clipboard is restored after
+each paste; non-text clipboard formats are not preserved by this workaround.
 
 The protocol, security boundaries, lifecycle, and implementation phases are in
 [Native service adapters](docs/native-services.md).

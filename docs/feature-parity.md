@@ -11,7 +11,8 @@
 | Wayland monitor/window selection | available | Persistent portal source selection |
 | Wayland virtual source | available when advertised | `uur display source virtual` → ScreenCast Virtual source |
 | Independent Wayland multi-screen switching | in progress | Multiple PipeWire streams → UU display topology adapter |
-| Clipboard and phone IME text | planned | RemoteDesktop Clipboard portal, then X11 fallback |
+| Phone IME text on KDE Wayland | partial | Unicode SendInput bridge → Klipper text clipboard → portal paste; previous text clipboard is restored |
+| Full clipboard synchronization | planned | Clipboard portal and X11 selections, including non-text formats |
 | Speaker and microphone audio | available through Wine | PulseAudio, pipewire-pulse, or ALSA selected from live capabilities |
 | System-audio loopback and remote mute | Wine integration | WASAPI → winepulse/winealsa |
 | Native tray | Wine baseline | Official tray, with StatusNotifierItem as the native route |

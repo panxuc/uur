@@ -7,13 +7,14 @@ pub const VERSION: u32 = 1;
 pub const RECORD_HELLO: u32 = 1;
 pub const RECORD_MOUSE: u32 = 2;
 pub const RECORD_KEYBOARD: u32 = 3;
+pub const RECORD_UNICODE: u32 = 4;
 
 /// One input record.  Fixed 16-byte payload after the 16-byte header keeps
 /// parsing trivial on both sides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Record {
     pub kind: u32,
-    /// Keyboard: Windows virtual-key code (as sent by SendInput).
+    /// Keyboard: Windows virtual-key code; Unicode: UTF-16 code unit.
     /// Mouse: button number for press/release, axis selector for motion.
     pub code: u16,
     /// Keyboard: 1 = key-down, 0 = key-up.

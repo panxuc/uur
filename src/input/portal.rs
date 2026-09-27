@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use ashpd::desktop::remote_desktop::{Axis, DeviceType, KeyState, RemoteDesktop};
 use ashpd::desktop::screencast::{CursorMode, Screencast};
-use ashpd::desktop::PersistMode;
+use ashpd::desktop::{PersistMode, Session};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, SyncSender};
@@ -15,6 +15,8 @@ type Reply = SyncSender<std::result::Result<(), String>>;
 
 enum Event {
     Key(i32, bool, Reply),
+    Text(i32, Reply),
+    Paste(String, Reply),
     Button(i32, bool, Reply),
     FlushMotion,
     Wheel(Axis, i32, Reply),
@@ -100,12 +102,20 @@ impl PortalBackend {
     }
 
     fn submit(&self, event: impl FnOnce(Reply) -> Event) -> Result<()> {
+        self.submit_with_timeout(event, Duration::from_secs(3))
+    }
+
+    fn submit_with_timeout(
+        &self,
+        event: impl FnOnce(Reply) -> Event,
+        timeout: Duration,
+    ) -> Result<()> {
         let (reply_sender, reply_receiver) = mpsc::sync_channel(1);
         self.sender
             .send(event(reply_sender))
             .map_err(|_| anyhow!("portal input session closed"))?;
         reply_receiver
-            .recv_timeout(Duration::from_secs(3))
+            .recv_timeout(timeout)
             .context("portal input request timed out")?
             .map_err(|error| anyhow!(error))
     }
@@ -157,6 +167,24 @@ async fn portal_worker(
     let (logical_width, logical_height) = stream.size().unwrap_or((65535, 65535));
     let pipewire = screencast.open_pipe_wire_remote(&session).await?;
     let _capture = CaptureGuard(crate::capture::spawn_helper(pipewire, stream_id)?);
+    let clipboard_bus =
+        if std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|desktop| desktop.contains("KDE")) {
+            zbus::Connection::session().await.ok()
+        } else {
+            None
+        };
+    let clipboard = if let Some(bus) = clipboard_bus.as_ref() {
+        zbus::Proxy::new(
+            bus,
+            "org.kde.klipper",
+            "/klipper",
+            "org.kde.klipper.klipper",
+        )
+        .await
+        .ok()
+    } else {
+        None
+    };
     let token = selection.restore_token().map(ToOwned::to_owned);
     ready
         .send(Ok(token))
@@ -177,6 +205,30 @@ async fn portal_worker(
                     )
                     .await;
                 answer(reply, result)?;
+            }
+            Event::Text(keysym, reply) => {
+                let result = async {
+                    portal
+                        .notify_keyboard_keysym(&session, keysym, KeyState::Pressed)
+                        .await?;
+                    portal
+                        .notify_keyboard_keysym(&session, keysym, KeyState::Released)
+                        .await
+                }
+                .await;
+                let _ = reply.send(result.map_err(|error| error.to_string()));
+            }
+            Event::Paste(value, reply) => {
+                let started = std::time::Instant::now();
+                let result = if let Some(clipboard) = clipboard.as_ref() {
+                    paste_with_klipper(&portal, &session, clipboard, &value).await
+                } else {
+                    Err(anyhow!("KDE clipboard service is unavailable"))
+                };
+                if started.elapsed() > Duration::from_millis(500) {
+                    eprintln!("text paste took {} ms", started.elapsed().as_millis());
+                }
+                let _ = reply.send(result.map_err(|error| error.to_string()));
             }
             Event::Button(button, down, reply) => {
                 let result = portal
@@ -235,6 +287,56 @@ async fn portal_worker(
     Ok(())
 }
 
+/// KDE's keysym injection reaches the portal but some applications discard
+/// characters outside their active XKB keymap. Paste those characters through
+/// Klipper and restore the previous text clipboard once the target has read it.
+async fn paste_with_klipper(
+    portal: &RemoteDesktop<'_>,
+    session: &Session<'_, RemoteDesktop<'_>>,
+    clipboard: &zbus::Proxy<'_>,
+    value: &str,
+) -> Result<()> {
+    let previous: String = clipboard.call("getClipboardContents", &()).await?;
+    let _: () = clipboard.call("setClipboardContents", &(value,)).await?;
+    tokio::time::sleep(Duration::from_millis(25)).await;
+
+    let ctrl = input_linux_sys::KEY_LEFTCTRL as i32;
+    let v = input_linux_sys::KEY_V as i32;
+    let result = async {
+        portal
+            .notify_keyboard_keycode(session, ctrl, KeyState::Pressed)
+            .await?;
+        portal
+            .notify_keyboard_keycode(session, v, KeyState::Pressed)
+            .await?;
+        portal
+            .notify_keyboard_keycode(session, v, KeyState::Released)
+            .await?;
+        portal
+            .notify_keyboard_keycode(session, ctrl, KeyState::Released)
+            .await
+    }
+    .await;
+    if result.is_err() {
+        let _ = portal
+            .notify_keyboard_keycode(session, v, KeyState::Released)
+            .await;
+        let _ = portal
+            .notify_keyboard_keycode(session, ctrl, KeyState::Released)
+            .await;
+    }
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let current: String = clipboard.call("getClipboardContents", &()).await?;
+    if current == value {
+        let _: () = clipboard
+            .call("setClipboardContents", &(previous.as_str(),))
+            .await?;
+    }
+    result?;
+    Ok(())
+}
+
 fn answer<T>(reply: Reply, result: std::result::Result<T, ashpd::Error>) -> Result<()> {
     let failure = result.as_ref().err().map(ToString::to_string);
     let _ = reply.send(result.map(|_| ()).map_err(|error| error.to_string()));
@@ -258,6 +360,24 @@ impl InputBackend for PortalBackend {
             self.held_keys.remove(&code);
         }
         Ok(())
+    }
+
+    fn text(&mut self, character: char) -> Result<()> {
+        let value = character as u32;
+        if value > 0x7f
+            && std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|desktop| desktop.contains("KDE"))
+        {
+            return self.submit_with_timeout(
+                |reply| Event::Paste(character.to_string(), reply),
+                Duration::from_secs(10),
+            );
+        }
+        let keysym = if value <= 0xff {
+            value
+        } else {
+            0x0100_0000 | value
+        };
+        self.submit(|reply| Event::Text(keysym as i32, reply))
     }
 
     fn button(&mut self, button: u16, down: bool) -> Result<()> {

@@ -9,6 +9,9 @@ pub trait InputBackend: Send {
     fn name(&self) -> &'static str;
 
     fn key(&mut self, vkey: u16, down: bool) -> Result<()>;
+    fn text(&mut self, _character: char) -> Result<()> {
+        anyhow::bail!("semantic text input is unavailable on this backend")
+    }
     fn button(&mut self, button: u16, down: bool) -> Result<()>;
     /// Absolute (normalized 0..65535) or relative pointer motion.
     fn motion(&mut self, absolute: bool, x: i32, y: i32) -> Result<()>;

@@ -1428,6 +1428,7 @@ dependencies = [
  "tokio",
  "toml",
  "x11rb",
+ "zbus",
 ]
 
 [[package]]

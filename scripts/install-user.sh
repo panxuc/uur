@@ -13,10 +13,13 @@ prefix="${UUR_INSTALL_PREFIX:-$HOME/.local}"
         "$root/target/release/uur" >&2
     exit 1
 }
-[[ -f "$root/build/hook/wevtapi.dll" && -f "$root/build/hook/uur-hook.dll" ]] || {
-    printf 'missing hook DLLs — run: ./hook/build.sh\n' >&2
-    exit 1
-}
+for component in wevtapi.dll uur-hook.dll wtsapi32.dll winlogon.exe \
+    uur-terminal-proxy.exe uur-mux-proxy.exe uur-launch-proxy.exe; do
+    [[ -f "$root/build/hook/$component" ]] || {
+        printf 'missing hook component %s — run: ./hook/build.sh\n' "$component" >&2
+        exit 1
+    }
+done
 [[ -f "$root/capture/uur-pw-capture" ]] || {
     printf 'missing capture helper — run: ./capture/build.sh\n' >&2
     exit 1
@@ -26,7 +29,8 @@ install -Dm0755 "$root/target/release/uur" "$prefix/bin/uur"
 for helper in uur-pw-capture; do
     install -Dm0755 "$root/capture/$helper" "$prefix/lib/uur/$helper"
 done
-for dll in wevtapi.dll uur-hook.dll winlogon.exe uur-terminal-proxy.exe; do
+for dll in wevtapi.dll uur-hook.dll wtsapi32.dll winlogon.exe \
+    uur-terminal-proxy.exe uur-mux-proxy.exe uur-launch-proxy.exe; do
     install -Dm0644 "$root/build/hook/$dll" "$prefix/lib/uur/hook/$dll"
 done
 
