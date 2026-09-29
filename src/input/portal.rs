@@ -304,8 +304,8 @@ async fn paste_with_klipper(
     let _: () = clipboard.call("setClipboardContents", &(value,)).await?;
     tokio::time::sleep(Duration::from_millis(25)).await;
 
-    let ctrl = input_linux_sys::KEY_LEFTCTRL as i32;
-    let v = input_linux_sys::KEY_V as i32;
+    let ctrl = input_linux_sys::KEY_LEFTCTRL;
+    let v = input_linux_sys::KEY_V;
     let result = async {
         portal
             .notify_keyboard_keycode(session, ctrl, KeyState::Pressed)
