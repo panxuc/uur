@@ -4,10 +4,11 @@
 //! session ends.
 
 use anyhow::{Context, Result};
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 
@@ -93,6 +94,68 @@ fn hook_source_dir() -> Result<PathBuf> {
         .context("hook DLLs not found (run the build first)")
 }
 
+static DEPLOY_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Replace a managed prefix file without inheriting the source's permissions.
+/// Nix store files are read-only; copying them directly leaves the prefix
+/// read-only too, so the next run cannot overwrite them. A temporary file in
+/// the destination directory keeps the replacement atomic and also repairs
+/// read-only files left by earlier uur versions.
+fn deploy_file(source: &Path, target: &Path) -> Result<()> {
+    let parent = target
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let filename = target
+        .file_name()
+        .context("deployment target has no file name")?
+        .to_string_lossy();
+
+    let mut temporary = None;
+    for _ in 0..32 {
+        let sequence = DEPLOY_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path = parent.join(format!(
+            ".{filename}.uur-{}-{sequence}.tmp",
+            std::process::id()
+        ));
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => {
+                temporary = Some((path, file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("creating temporary deployment for {}", target.display())
+                });
+            }
+        }
+    }
+    let Some((temporary_path, mut output)) = temporary else {
+        anyhow::bail!("could not create a temporary file for {}", target.display());
+    };
+
+    let copy_result = (|| -> Result<()> {
+        let mut input = File::open(source)
+            .with_context(|| format!("opening deployment source {}", source.display()))?;
+        std::io::copy(&mut input, &mut output)
+            .with_context(|| format!("copying deployment source {}", source.display()))?;
+        output.flush()?;
+        Ok(())
+    })();
+    drop(output);
+    if let Err(error) = copy_result {
+        let _ = std::fs::remove_file(&temporary_path);
+        return Err(error);
+    }
+
+    if let Err(error) = std::fs::rename(&temporary_path, target) {
+        let _ = std::fs::remove_file(&temporary_path);
+        return Err(error).with_context(|| format!("deploying to {}", target.display()));
+    }
+    Ok(())
+}
+
 /// Install the native preload DLLs in the managed prefix, outside the
 /// proprietary application directory. Wine's native override resolves them
 /// from system32, so client updates never overwrite uur and uur never edits an
@@ -104,7 +167,7 @@ fn deploy_hooks(prefix: &Path) -> Result<()> {
     for dll in ["wevtapi.dll", "uur-hook.dll", "wtsapi32.dll"] {
         let from = source.join(dll);
         let to = target.join(dll);
-        std::fs::copy(&from, &to)
+        deploy_file(&from, &to)
             .with_context(|| format!("deploying {} to {}", dll, target.display()))?;
     }
     Ok(())
@@ -152,7 +215,7 @@ fn deploy_terminal_proxy(install_dir: &Path) -> Result<PathBuf> {
         std::fs::copy(&target, &backup)
             .with_context(|| format!("backing up {}", target.display()))?;
     }
-    std::fs::copy(&source, &target)
+    deploy_file(&source, &target)
         .with_context(|| format!("deploying native terminal proxy to {}", target.display()))?;
     std::fs::write(marker, b"managed by uur\n")?;
 
@@ -163,7 +226,7 @@ fn deploy_terminal_proxy(install_dir: &Path) -> Result<PathBuf> {
         std::fs::copy(&mux_target, &mux_backup)
             .with_context(|| format!("backing up {}", mux_target.display()))?;
     }
-    std::fs::copy(&mux_source, &mux_target)
+    deploy_file(&mux_source, &mux_target)
         .with_context(|| format!("deploying native mux proxy to {}", mux_target.display()))?;
     std::fs::write(mux_marker, b"managed by uur\n")?;
     Ok(bin.join("uu-terminal-bridge.runtime"))
@@ -766,6 +829,88 @@ fn wine_debug() -> String {
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+    use std::os::unix::fs::PermissionsExt;
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn create() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            for _ in 0..32 {
+                let path = std::env::temp_dir().join(format!(
+                    "uur-session-deploy-{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => return Self(path),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!("creating test directory: {error}"),
+                }
+            }
+            panic!("could not create a unique test directory");
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn deploy_file_repairs_readonly_targets_and_is_repeatable() {
+        let directory = TestDirectory::create();
+        let source = directory.path().join("store/uur-hook.dll");
+        let target = directory.path().join("prefix/system32/uur-hook.dll");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&source, b"new hook contents").unwrap();
+        std::fs::write(&target, b"old hook contents").unwrap();
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o444)).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        deploy_file(&source, &target).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"new hook contents");
+        assert_ne!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o200,
+            0
+        );
+
+        deploy_file(&source, &target).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"new hook contents");
+        assert_ne!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o200,
+            0
+        );
+        assert_eq!(
+            std::fs::read_dir(target.parent().unwrap()).unwrap().count(),
+            1
+        );
+    }
+
+    #[test]
+    fn deploy_file_does_not_inherit_readonly_source_permissions() {
+        let directory = TestDirectory::create();
+        let source = directory.path().join("store/uur-hook.dll");
+        let target = directory.path().join("prefix/system32/uur-hook.dll");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&source, b"hook contents").unwrap();
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        deploy_file(&source, &target).unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"hook contents");
+        assert_ne!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o200,
+            0
+        );
+    }
 
     #[test]
     fn parses_xft_dpi_resources() {
