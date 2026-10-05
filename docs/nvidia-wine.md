@@ -113,8 +113,10 @@ only texture dimensions and DXGI format; turn tracing off for performance runs.
 See [recorded results](nvidia-wine-validation.md). The final source executable
 passed cold-start, official detector and pixel checks, established a real H.265
 hardware-decode connection with user-confirmed clarity, and restored the default
-path after normal stop and a disabled restart in the same prefix. Exact visible
-crop, moving-content high-FPS latency, real interrupted-session recovery, a
+path after normal stop and a disabled restart in the same prefix. The user also
+reported improved latency during subsequent high-frame-rate use; matched
+before/after values have not been recorded. Exact visible crop, quantitative
+moving-content high-FPS latency comparisons, real interrupted-session recovery, a
 physical non-NVIDIA environment and a broader Wine/GPU matrix remain outstanding
 before a release or default-on decision. A request for 144 fps and a static
 one-fps desktop are not evidence of sustained 144-fps decoding.
