@@ -894,6 +894,25 @@ mod tests {
     }
 
     #[test]
+    fn deploy_file_does_not_inherit_readonly_source_permissions() {
+        let directory = TestDirectory::create();
+        let source = directory.path().join("store/uur-hook.dll");
+        let target = directory.path().join("prefix/system32/uur-hook.dll");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&source, b"hook contents").unwrap();
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        deploy_file(&source, &target).unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"hook contents");
+        assert_ne!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o200,
+            0
+        );
+    }
+
+    #[test]
     fn parses_xft_dpi_resources() {
         assert_eq!(parse_xft_dpi("Xft.antialias: 1\nXft.dpi: 192\n"), Some(192));
         assert_eq!(parse_xft_dpi("Xft.dpi: 168.4\n"), Some(168));
