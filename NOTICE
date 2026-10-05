@@ -8,3 +8,11 @@ Design ideas were learned from and are credited to:
 
 NetEase UU Remote is proprietary software of NetEase; uur neither
 redistributes nor modifies it on disk.
+
+The optional NVIDIA/Wine experiment under contrib/nvidia-wine uses
+SveSop/nvcuda (8982084679efc390d217a7f67553f1e319eefe10), whose relay
+and the included output-texture patch/helper are LGPL-2.1-or-later.
+See contrib/nvidia-wine/LICENSE.md and docs/nvidia-wine.md. The CUDA
+and CUVID relays are built/downloaded only by an explicit developer
+action and are not included in uur's default binaries or packages.
+The original Wine Staging and SveSop copyright notices are retained.

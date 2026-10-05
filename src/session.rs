@@ -406,6 +406,7 @@ pub fn start() -> Result<()> {
     rotate_session_log();
     let config = Config::load()?;
     let prefix = data_dir()?.join("wine");
+    crate::nvidia_wine::recover(&prefix)?;
     let install_dir = crate::wine::find_client_dir(&prefix)
         .context("client not provisioned; run `uur setup` first")?;
     if let Some(dpi) = xft_dpi() {
@@ -422,6 +423,9 @@ pub fn start() -> Result<()> {
     if let Some(proxy) = crate::proxy::sync(&prefix)? {
         println!("WinINet proxy synchronized: {proxy}");
     }
+    // Declared before SessionResources so Wine exits before DLL restoration.
+    let mut nvidia_bridge =
+        crate::nvidia_wine::begin(&prefix, &install_dir, config.nvidia_wine_bridge.as_deref())?;
     let audio = crate::audio::sync_wine(&prefix)?;
     println!("{}", t!("session.audio_backend", backend = audio.label()));
 
@@ -505,7 +509,10 @@ pub fn start() -> Result<()> {
     let _ = Command::new("wine")
         .env("WINEPREFIX", &prefix)
         .env("WINEDEBUG", wine_debug())
-        .env("WINEDLLOVERRIDES", "wevtapi=n,wtsapi32=n")
+        .env(
+            "WINEDLLOVERRIDES",
+            crate::nvidia_wine::dll_overrides(nvidia_bridge.is_some()),
+        )
         .env("UUR_HOOK_LOG", log_path()?)
         .env("UUR_BRIDGE_PORT", config.bridge_port.to_string())
         .env("UUR_BRIDGE_TOKEN", config.bridge_token.clone())
@@ -541,7 +548,10 @@ pub fn start() -> Result<()> {
             .env("WINEPREFIX", &prefix)
             .env("WINEDEBUG", wine_debug())
             .current_dir(&install_dir)
-            .env("WINEDLLOVERRIDES", "wevtapi=n,wtsapi32=n")
+            .env(
+                "WINEDLLOVERRIDES",
+                crate::nvidia_wine::dll_overrides(nvidia_bridge.is_some()),
+            )
             .env("UUR_HOOK_LOG", log_path().unwrap_or_default())
             .env("UUR_BRIDGE_PORT", config.bridge_port.to_string())
             .env("UUR_BRIDGE_TOKEN", config.bridge_token.clone())
@@ -586,6 +596,9 @@ pub fn start() -> Result<()> {
     println!("{}", t!("session.client_exited", code = 0));
 
     resources.shutdown();
+    if let Some(bridge) = nvidia_bridge.as_mut() {
+        bridge.restore()?;
+    }
     Ok(())
 }
 

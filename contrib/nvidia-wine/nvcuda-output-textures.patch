@@ -1,0 +1,170 @@
+--- a/dlls/nvcuda/nvcuda.c
++++ b/dlls/nvcuda/nvcuda.c
+@@ -37,7 +37,9 @@
+ #include "cuda.h"
+ #include "nvcuda.h"
+ #include "d3d9.h"
++#define COBJMACROS
+ #include "d3d11.h"
++#include "limits.h"
+ #include "function_mappings.h"
+ 
+ #define DEV_PTR "%llu" /* CUdeviceptr_v2 */
+@@ -2096,53 +2098,99 @@
+     return pcuGraphicsGLRegisterImage(pCudaResource, image, target, Flags);
+ }
+ 
++#include "uur_nvdec_bridge.c"
++
+ CUresult WINAPI wine_cuGraphicsMapResources(unsigned int count, CUgraphicsResource *resources, CUstream hStream)
+ {
+-    TRACE("(%u, %p, %p)\n", count, resources, hStream);
+-    return pcuGraphicsMapResources(count, resources, hStream);
++    int batch;
++    pthread_mutex_lock(&uur_texture_mutex);
++    batch = uur_resource_batch(count, resources);
++    pthread_mutex_unlock(&uur_texture_mutex);
++    if (batch < 0) return CUDA_ERROR_INVALID_VALUE;
++    return batch ? CUDA_SUCCESS : pcuGraphicsMapResources(count, resources, hStream);
+ }
+ 
+ CUresult WINAPI wine_cuGraphicsResourceGetMappedMipmappedArray(CUmipmappedArray *pMipmappedArray, CUgraphicsResource resource)
+ {
+-    TRACE("(%p, %p)\n", pMipmappedArray, resource);
+-    return pcuGraphicsResourceGetMappedMipmappedArray(pMipmappedArray, resource);
++    int bridge;
++    pthread_mutex_lock(&uur_texture_mutex);
++    bridge = uur_find(resource) != NULL;
++    pthread_mutex_unlock(&uur_texture_mutex);
++    return bridge ? CUDA_ERROR_NOT_SUPPORTED : pcuGraphicsResourceGetMappedMipmappedArray(pMipmappedArray, resource);
+ }
+ 
+ CUresult WINAPI wine_cuGraphicsResourceGetMappedPointer(CUdeviceptr_v1 *pDevPtr, unsigned int *pSize, CUgraphicsResource resource)
+ {
+-    TRACE("(%p, %p, %p)\n", pDevPtr, pSize, resource);
+-    return pcuGraphicsResourceGetMappedPointer(pDevPtr, pSize, resource);
++    int bridge;
++    pthread_mutex_lock(&uur_texture_mutex);
++    bridge = uur_find(resource) != NULL;
++    pthread_mutex_unlock(&uur_texture_mutex);
++    return bridge ? CUDA_ERROR_NOT_SUPPORTED : pcuGraphicsResourceGetMappedPointer(pDevPtr, pSize, resource);
+ }
+ 
+ CUresult WINAPI wine_cuGraphicsResourceGetMappedPointer_v2(CUdeviceptr *pDevPtr, size_t *pSize, CUgraphicsResource resource)
+ {
+-    TRACE("(%p, %p, %p)\n", pDevPtr, pSize, resource);
+-    return pcuGraphicsResourceGetMappedPointer_v2(pDevPtr, pSize, resource);
++    int bridge;
++    pthread_mutex_lock(&uur_texture_mutex);
++    bridge = uur_find(resource) != NULL;
++    pthread_mutex_unlock(&uur_texture_mutex);
++    return bridge ? CUDA_ERROR_NOT_SUPPORTED : pcuGraphicsResourceGetMappedPointer_v2(pDevPtr, pSize, resource);
+ }
+ 
+ CUresult WINAPI wine_cuGraphicsResourceSetMapFlags(CUgraphicsResource resource, unsigned int flags)
+ {
+-    TRACE("(%p, %u)\n", resource, flags);
+-    return pcuGraphicsResourceSetMapFlags(resource, flags);
++    int bridge;
++    pthread_mutex_lock(&uur_texture_mutex);
++    bridge = uur_find(resource) != NULL;
++    pthread_mutex_unlock(&uur_texture_mutex);
++    if (!bridge) return pcuGraphicsResourceSetMapFlags(resource, flags);
++    return flags == 0 || flags == 2 ? CUDA_SUCCESS : CUDA_ERROR_NOT_SUPPORTED;
+ }
+ 
+ CUresult WINAPI wine_cuGraphicsSubResourceGetMappedArray(CUarray *pArray, CUgraphicsResource resource,
+                                                          unsigned int arrayIndex, unsigned int mipLevel)
+ {
+-    TRACE("(%p, %p, %u, %u)\n", pArray, resource, arrayIndex, mipLevel);
+-    return pcuGraphicsSubResourceGetMappedArray(pArray, resource, arrayIndex, mipLevel);
++    struct uur_texture *p;
++    if (!pArray) return CUDA_ERROR_INVALID_VALUE;
++    pthread_mutex_lock(&uur_texture_mutex);
++    p = uur_find(resource);
++    if (p && !arrayIndex && !mipLevel) *pArray = p->array;
++    pthread_mutex_unlock(&uur_texture_mutex);
++    if (!p) return pcuGraphicsSubResourceGetMappedArray(pArray, resource, arrayIndex, mipLevel);
++    return arrayIndex || mipLevel ? CUDA_ERROR_INVALID_VALUE : CUDA_SUCCESS;
+ }
+ 
+ CUresult WINAPI wine_cuGraphicsUnmapResources(unsigned int count, CUgraphicsResource *resources, CUstream hStream)
+ {
+-    TRACE("(%u, %p, %p)\n", count, resources, hStream);
+-    return pcuGraphicsUnmapResources(count, resources, hStream);
++    unsigned i;
++    int batch;
++    CUresult result = CUDA_SUCCESS;
++    pthread_mutex_lock(&uur_texture_mutex);
++    batch = uur_resource_batch(count, resources);
++    if (batch > 0)
++        for (i = 0; i < count && !result; ++i) result = uur_upload(uur_find(resources[i]), hStream);
++    pthread_mutex_unlock(&uur_texture_mutex);
++    if (batch < 0) return CUDA_ERROR_INVALID_VALUE;
++    return batch ? result : pcuGraphicsUnmapResources(count, resources, hStream);
+ }
+ 
+ CUresult WINAPI wine_cuGraphicsUnregisterResource(CUgraphicsResource resource)
+ {
+-    TRACE("(%p)\n", resource);
+-    return pcuGraphicsUnregisterResource(resource);
++    struct uur_texture **link, *p;
++    CUresult result;
++    pthread_mutex_lock(&uur_texture_mutex);
++    for (link = &uur_textures; *link && (CUgraphicsResource)*link != resource; link = &(*link)->next) {}
++    p = *link;
++    if (!p) { pthread_mutex_unlock(&uur_texture_mutex); return pcuGraphicsUnregisterResource(resource); }
++    result = pcuArrayDestroy(p->array);
++    if (!result) *link = p->next;
++    pthread_mutex_unlock(&uur_texture_mutex);
++    if (result) return result;
++    ID3D11Texture2D_Release(p->staging);
++    ID3D11DeviceContext_Release(p->context);
++    ID3D11Resource_Release(p->texture);
++    free(p);
++    return CUDA_SUCCESS;
+ }
+ 
+ CUresult WINAPI wine_cuInit(unsigned int flags)
+@@ -3436,14 +3484,22 @@
+ 
+ CUresult WINAPI wine_cuGraphicsMapResources_ptsz(unsigned int count, CUgraphicsResource *resources, CUstream hStream)
+ {
+-    TRACE("(%u, %p, %p)\n", count, resources, hStream);
+-    return pcuGraphicsMapResources_ptsz(count, resources, hStream);
++    int batch;
++    pthread_mutex_lock(&uur_texture_mutex);
++    batch = uur_resource_batch(count, resources);
++    pthread_mutex_unlock(&uur_texture_mutex);
++    if (!batch) return pcuGraphicsMapResources_ptsz(count, resources, hStream);
++    return wine_cuGraphicsMapResources(count, resources, hStream ? hStream : (CUstream)2);
+ }
+ 
+ CUresult WINAPI wine_cuGraphicsUnmapResources_ptsz(unsigned int count, CUgraphicsResource *resources, CUstream hStream)
+ {
+-    TRACE("(%u, %p, %p)\n", count, resources, hStream);
+-    return pcuGraphicsUnmapResources_ptsz(count, resources, hStream);
++    int batch;
++    pthread_mutex_lock(&uur_texture_mutex);
++    batch = uur_resource_batch(count, resources);
++    pthread_mutex_unlock(&uur_texture_mutex);
++    if (!batch) return pcuGraphicsUnmapResources_ptsz(count, resources, hStream);
++    return wine_cuGraphicsUnmapResources(count, resources, hStream ? hStream : (CUstream)2);
+ }
+ 
+ CUresult WINAPI wine_cuLaunchKernel_ptsz(CUfunction f, unsigned int gridDimX, unsigned int gridDimY, unsigned int gridDimZ,
+@@ -6576,13 +6632,7 @@
+ 
+ CUresult WINAPI wine_cuGraphicsD3D11RegisterResource(CUgraphicsResource *pCudaResource, ID3D11Resource *pD3DResource, unsigned int Flags)
+ {
+-    FIXME("(%p, %p, %u) - semi-stub\n", pCudaResource, pD3DResource, Flags);
+-    /* Not able to handle spesific flags at this time */
+-    if(Flags > 0)
+-      return CUDA_ERROR_INVALID_VALUE;
+-
+-    /* pD3DResource is unknown at this time and cannot be "registered" */
+-    return CUDA_ERROR_UNKNOWN;
++    return uur_register(pCudaResource, pD3DResource, Flags);
+ }
+ 
+ CUresult WINAPI wine_cuD3D11CtxCreate(CUcontext* pCtx, CUdevice* pCudaDevice, unsigned int Flags, ID3D11Device* pD3DDevice)

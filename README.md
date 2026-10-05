@@ -254,6 +254,7 @@ Normal runs suppress Wine's non-actionable `fixme` output.
 - [Nix and NixOS](docs/nix.md)
 - [Windows feature map](docs/windows-feature-map.md)
 - [Video and display backends](docs/video-backends.md)
+- [Experimental NVIDIA/Wine decode bridge (default off)](docs/nvidia-wine.md)
 
 ## 🙏 Credits
 
