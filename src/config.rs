@@ -24,6 +24,8 @@ pub struct Config {
     pub remote_desktop_restore_token: Option<String>,
     /// Portal source type: monitor, window, or virtual.
     pub capture_source: String,
+    /// Opt-in directory containing the experimental NVIDIA/Wine decode bridge.
+    pub nvidia_wine_bridge: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -37,6 +39,7 @@ impl Default for Config {
             capture_restore_token: None,
             remote_desktop_restore_token: None,
             capture_source: "monitor".into(),
+            nvidia_wine_bridge: None,
         }
     }
 }

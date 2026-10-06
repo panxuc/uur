@@ -243,6 +243,7 @@ WINEDEBUG=+loaddll uur run
 - [Nix 与 NixOS](docs/nix.md)
 - [Windows 功能映射](docs/windows-feature-map.md)
 - [视频与显示后端](docs/video-backends.md)
+- [实验性 NVIDIA/Wine 解码桥接（默认关闭）](docs/nvidia-wine.md)
 
 ## 🙏 致谢
 

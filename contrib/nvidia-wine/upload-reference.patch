@@ -1,0 +1,90 @@
+--- a/dlls/nvcuda/uur_nvdec_bridge.c
++++ b/dlls/nvcuda/uur_nvdec_bridge.c
+@@ -10,6 +10,7 @@
+     ID3D11Resource *texture;
+     ID3D11DeviceContext *context;
+     ID3D11Texture2D *staging;
++    void *reference_host;
+     CUarray array;
+     UINT width, height, row_bytes;
+ };
+@@ -42,36 +43,24 @@
+     return !bridges ? 0 : bridges == count ? 1 : -1;
+ }
+ 
++/* Benchmark reference only: same final bridge with the earlier upload strategy.
++ * Not an unmodified upstream uur implementation. */
+ static CUresult uur_upload(struct uur_texture *p, CUstream stream)
+ {
+-    D3D11_MAPPED_SUBRESOURCE mapped;
+     CUDA_MEMCPY2D copy = {0};
+-    CUresult result;
+-    HRESULT hr;
+-
+-    /* Honour the decoder's nonblocking stream before reading its real array. */
+-    result = pcuStreamSynchronize(stream);
++    CUresult result = pcuStreamSynchronize(stream);
+     if (result) return result;
+-    hr = ID3D11DeviceContext_Map(p->context, (ID3D11Resource *)p->staging,
+-                               0, D3D11_MAP_WRITE, 0, &mapped);
+-    if (FAILED(hr)) return CUDA_ERROR_UNKNOWN;
+-    if (mapped.RowPitch < p->row_bytes)
+-    {
+-        ID3D11DeviceContext_Unmap(p->context, (ID3D11Resource *)p->staging, 0);
+-        return CUDA_ERROR_INVALID_VALUE;
+-    }
+-    copy.srcMemoryType = 3; /* CU_MEMORYTYPE_ARRAY */
++    copy.srcMemoryType = 3;
+     copy.srcArray = p->array;
+-    copy.dstMemoryType = 1; /* CU_MEMORYTYPE_HOST */
+-    copy.dstHost = mapped.pData;
+-    copy.dstPitch = mapped.RowPitch;
++    copy.dstMemoryType = 1;
++    copy.dstHost = p->reference_host;
++    copy.dstPitch = p->row_bytes;
+     copy.WidthInBytes = p->row_bytes;
+     copy.Height = p->height;
+     result = pcuMemcpy2D_v2(&copy);
+-    ID3D11DeviceContext_Unmap(p->context, (ID3D11Resource *)p->staging, 0);
+     if (!result)
+-        ID3D11DeviceContext_CopyResource(p->context, p->texture,
+-                                        (ID3D11Resource *)p->staging);
++        ID3D11DeviceContext_UpdateSubresource(p->context, p->texture, 0, NULL,
++                                             p->reference_host, p->row_bytes, 0);
+     return result;
+ }
+ 
+@@ -110,12 +99,14 @@
+     p->width = desc.Width;
+     p->height = desc.Height;
+     p->row_bytes = desc.Width * channels * bytes;
++    p->reference_host = malloc((size_t)p->row_bytes * p->height);
++    if (!p->reference_host) { free(p); return CUDA_ERROR_OUT_OF_MEMORY; }
+     array.width = desc.Width;
+     array.height = desc.Height;
+     array.format = bytes == 1 ? 1 : 2; /* CU_AD_FORMAT_UNSIGNED_INT8 / INT16 */
+     array.channels = channels;
+     result = pcuArrayCreate_v2(&p->array, (const CUDA_ARRAY_DESCRIPTOR *)&array);
+-    if (result) { free(p); return result; }
++    if (result) { free(p->reference_host); free(p); return result; }
+     ID3D11Resource_GetDevice(texture, &device);
+     ID3D11Device_GetImmediateContext(device, &p->context);
+     desc.Usage = D3D11_USAGE_STAGING;
+@@ -128,6 +119,7 @@
+     {
+         ID3D11DeviceContext_Release(p->context);
+         pcuArrayDestroy(p->array);
++        free(p->reference_host);
+         free(p);
+         return CUDA_ERROR_NOT_SUPPORTED;
+     }
+--- a/dlls/nvcuda/nvcuda.c
++++ b/dlls/nvcuda/nvcuda.c
+@@ -2189,6 +2189,7 @@
+     ID3D11Texture2D_Release(p->staging);
+     ID3D11DeviceContext_Release(p->context);
+     ID3D11Resource_Release(p->texture);
++    free(p->reference_host);
+     free(p);
+     return CUDA_SUCCESS;
+ }

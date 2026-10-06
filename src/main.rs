@@ -11,6 +11,7 @@ mod i18n;
 mod inhibit;
 mod input;
 mod launcher;
+mod nvidia_wine;
 mod protocol;
 mod proxy;
 mod session;
