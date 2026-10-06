@@ -27,7 +27,8 @@ This is a development record, not a release or performance claim.
 | Experimental real-session shutdown and disabled restart in the same prefix | Passed | Normal `uur stop` removed the journal and installed relay links. With the configuration option removed, the final executable restarted, D3D11 initialized at 3440 × 1440 and the official detector completed with all eight hardware profiles unsupported, matching the original baseline. No opt-in journal was recreated. The option was then restored for the user's isolated test launcher. |
 | Earlier minimal bridge prototype, real official-client connection | H.265 hardware decoding shown in session statistics | This used the earlier local helper, not the final contributed helper and lifecycle integration. The desktop was mostly static (about 1 fps); it does not validate sustained 144 fps or a latency improvement. |
 | Final integration, cold start and real connection | Passed for NVDEC selection and user-reported clarity | D3D11 initialized successfully in both isolated baseline and experimental prefixes after restoring the monitor and stopping stale Wine processes. The final source executable connected to the remote Windows computer. The viewer loaded the contributed CUDA relay, pinned CUVID relay and native Linux CUDA/CUVID libraries; its live output textures were R8 3456 × 1440 and RG8 1728 × 720. The user's control-center screenshot showed H.265, hardware encode/hardware decode, DXGI capture, 3 ms network delay, 10 ms frame delay and 0% packet loss. The user confirmed that the image was clear. The screenshot was captured at only 1 fps and is not a high-FPS latency benchmark. |
-| Subsequent high-frame-rate use | User reported improved latency | The user explicitly confirmed that latency improved at high frame rates. The actual frame rate, matched before/after latency values and comparison conditions have not yet been recorded, so no improvement percentage is claimed. This report is separate from the static 1-fps screenshot. |
+| Subsequent high-frame-rate use | User reported improved latency | The user explicitly confirmed that latency improved at high frame rates. The actual frame rate, matched before/after remote latency values and comparison conditions have not yet been recorded, so no end-to-end improvement percentage is claimed from that report. This report is separate from the static 1-fps screenshot. |
+| Final-source copyback A/B benchmark | 18 runs passed every-frame pixel validation | Using Wine 10's builtin D3D11 backend and the same final source except for a reconstructed UpdateSubresource upload reference, the NV12 two-plane 144-fps target workload measured bridge time 4.475 → 1.034 ms (76.9% reduction), and producer GPU-ready time 5.263 → 1.758 ms (66.6%). A 60-fps comparison that both variants sustained showed similar reductions. This is a texture-upload measurement, not remote/input-to-display latency; see [method, ranges and raw data](nvidia-wine-benchmark.md). |
 | Physical non-NVIDIA machine | Not tested | Unsupported-host fallback has a unit test; a physical-machine check remains outstanding. |
 
 ## Independent display initialization failure
@@ -52,7 +53,8 @@ baseline prefix. The final integrated source executable established a real
 Windows connection and passed the pixel/detector checks again. This resolves
 the display-condition blocker. The real session selected hardware decoding,
 the user confirmed clarity and subsequently reported improved high-frame-rate
-latency. A controlled quantitative end-to-end comparison remains outstanding.
+latency. The subsequent controlled final-source upload benchmark quantifies
+copyback cost; an end-to-end comparison remains outstanding.
 
 ## Remaining acceptance checks
 

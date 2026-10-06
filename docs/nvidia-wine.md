@@ -74,7 +74,9 @@ A real CUDA array receives decoded output. On unmap, the producer stream is
 synchronized, `cuMemcpy2D_v2` copies to a writable D3D11 staging texture using
 its actual `RowPitch`, then `CopyResource` transfers to the display texture.
 This still copies GPU → host → GPU. It does **not** claim zero-copy, zero CPU
-cost, or a measured reduction of full input-to-display latency.
+cost, or a measured reduction of full input-to-display latency. The separate
+[final-source upload benchmark](nvidia-wine-benchmark.md) records a controlled
+comparison against a reconstructed UpdateSubresource upload reference.
 
 ## Reproduce validation
 
