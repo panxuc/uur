@@ -86,6 +86,18 @@ setup:
   silent_install_unavailable: "the installer ignored silent mode; complete its window manually if it opened"
   done: "provisioned into %{path}"
 
+uninstall:
+  no_root: "Run uur uninstall as the desktop user, without sudo. Remove the system package separately with its package manager."
+  plan: "Removal plan (directories include their contents):"
+  purge_warning: "This permanently deletes the managed client, login/account data, Wine environment, installer cache, configuration and logs."
+  keep_data: "Client/account data, configuration and logs will be kept. Use --purge to remove them too."
+  package_hint: "System package files and shared dependencies are left to the package manager. On Arch, run sudo pacman -Rns uur after this command."
+  dry_run: "Preview only; no processes were stopped and no files were changed."
+  confirm_required: "No terminal is available for confirmation. Review --dry-run, then pass --yes to confirm removal."
+  confirm: "Proceed with removal? [y/N]"
+  cancelled: "Cancelled; no files were changed."
+  done: "The selected user files and recognized source-installation files have been removed."
+
 autostart:
   enabled: "login autostart enabled: %{path}"
   disabled: "login autostart disabled"

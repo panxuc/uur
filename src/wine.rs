@@ -414,8 +414,11 @@ pub fn adopt_shortcut(prefix: &Path, uur_bin: &Path) -> Result<()> {
     };
 
     let mut icon_name = String::new();
-    let home = std::env::var("HOME").unwrap_or_default();
-    let icons = PathBuf::from(home).join(".local/share/icons");
+    let data_home = crate::config::data_dir()?
+        .parent()
+        .context("no data home")?
+        .to_path_buf();
+    let icons = data_home.join("icons");
     let mut best = 0u32;
     if let Ok(sizes) = fs::read_dir(icons.join("hicolor")) {
         for size in sizes.flatten() {
@@ -439,9 +442,7 @@ pub fn adopt_shortcut(prefix: &Path, uur_bin: &Path) -> Result<()> {
         }
     }
 
-    let applications = std::env::var("HOME")
-        .map(|h| PathBuf::from(h).join(".local/share/applications"))
-        .context("no home")?;
+    let applications = data_home.join("applications");
     std::fs::create_dir_all(&applications)?;
     let entry = applications.join(format!("{name}.desktop"));
     let exec = uur_bin.display();
@@ -462,7 +463,9 @@ pub fn adopt_shortcut(prefix: &Path, uur_bin: &Path) -> Result<()> {
              {icon_line}Terminal=false\n\
              NoDisplay=true\n\
              X-UUR-Managed=true\n\
-             Categories=Network;RemoteAccess;\n"
+             X-UUR-Prefix={}\n\
+             Categories=Network;RemoteAccess;\n",
+            prefix.display()
         ),
     )
     .with_context(|| format!("writing {}", entry.display()))?;

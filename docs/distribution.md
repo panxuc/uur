@@ -132,23 +132,40 @@ uur setup --accept-eula
 The fresh prefix needs the official client installed and logged in again.
 The backup retains the previous client and account data.
 
-To clear the managed client, configuration and logs, first disable autostart and stop the
-session, then archive the three uur directories. Remove the distribution
-package separately with its package manager:
+`uur uninstall` stops the managed session and Wine server, removes this user's
+autostart entry and recognized UU launchers/icons, and removes a source
+installation identified by its installer receipt. It keeps the managed client,
+account data, configuration and logs by default. Use `--purge` for a fresh
+start or complete removal:
 
 ```bash
-uur autostart disable
-uur stop
-uur_backup="$HOME/uur-backup-$(date +%Y%m%d-%H%M%S)"
-mkdir -m 0700 -- "$uur_backup"
-uur_data="${XDG_DATA_HOME:-$HOME/.local/share}/uur"
-uur_config="${XDG_CONFIG_HOME:-$HOME/.config}/uur"
-uur_state="${XDG_STATE_HOME:-$HOME/.local/state}/uur"
-if test -d "$uur_data"; then mv -- "$uur_data" "$uur_backup/data"; fi
-if test -d "$uur_config"; then mv -- "$uur_config" "$uur_backup/config"; fi
-if test -d "$uur_state"; then mv -- "$uur_state" "$uur_backup/state"; fi
+# Preview only: no processes stopped, no files changed
+uur uninstall --purge --dry-run
+
+# Run as the desktop user, NOT with sudo; review the paths and confirm
+uur uninstall --purge
+
+# Remove system package files afterwards (Arch Linux)
+sudo pacman -Rns uur
 ```
 
-Delete that backup when its client data and logs are no longer needed.
-Unpin any retained Wine-generated launcher after package removal; its command
-is an alias for `uur run`.
+Purge permanently deletes the dedicated Wine prefix (including Wine Mono,
+WebView2 and the official client), login/account data, installer cache, all uur
+configuration and logs, and private runtime files. Back up the `uur` XDG
+directories first if those data are needed. For unattended removal, explicitly
+confirm with `uur uninstall --purge --yes`. The command honors the current
+`XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_RUNTIME_DIR`; use
+the same values used for setup. A custom source install can be selected with
+`UUR_INSTALL_PREFIX=/path/to/prefix uur uninstall --purge`.
+
+On Debian/Ubuntu, use `sudo apt purge uur` after the user cleanup; on Fedora,
+use `sudo dnf remove uur`. Package-manager removal alone leaves per-user data
+intact, including when run with `purge`: package scripts run as root and do not
+erase other users' home directories. Each user should run the cleanup command
+before the system package is removed. If the package was already removed,
+reinstall it to get the cleanup command, run `uur uninstall --purge`, then
+remove the package again; running setup is not required. Shared Wine/Mono, PipeWire and portal
+packages remain the package manager's responsibility. Kernel/device settings
+and compositor-granted portal permissions are not reset by user-data cleanup.
+Unpin any old launcher from the desktop panel afterwards if the panel retains
+its own pinned copy.

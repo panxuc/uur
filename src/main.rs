@@ -15,6 +15,7 @@ mod protocol;
 mod proxy;
 mod session;
 mod terminal;
+mod uninstall;
 mod upstream;
 mod video;
 mod wallpaper;
@@ -60,6 +61,18 @@ enum Command {
     Run,
     /// Stop every uur-owned process and the managed Wine prefix.
     Stop,
+    /// Remove this user's integration and source installation; optionally erase all managed data.
+    Uninstall {
+        /// Delete the managed Wine prefix, account data, installer cache, configuration and logs.
+        #[arg(long)]
+        purge: bool,
+        /// Show the exact removal plan without stopping processes or changing files.
+        #[arg(long)]
+        dry_run: bool,
+        /// Confirm removal without an interactive prompt.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Manage optional XDG login autostart.
     Autostart {
         #[command(subcommand)]
@@ -174,9 +187,14 @@ fn main() -> Result<()> {
         } => wine::setup(accept_eula, repair),
         Command::Doctor => doctor::report(),
         Command::Pointer => bridge::print_pointer(),
-        Command::Capture => capture::run(),
+        Command::Capture => capture::run_standalone(),
         Command::Run => session::start(),
         Command::Stop => session::stop(),
+        Command::Uninstall {
+            purge,
+            dry_run,
+            yes,
+        } => uninstall::run(purge, dry_run, yes),
         Command::Autostart { action } => match action {
             AutostartAction::Enable => autostart::enable(),
             AutostartAction::Disable => autostart::disable(),

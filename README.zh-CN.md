@@ -147,10 +147,16 @@ uur wol status          # 检查物理有线网卡的 WOL 状态
 uur display status      # 查看显示器、窗口或 Portal 虚拟源设置
 uur display source virtual
 uur stop                # 只停止 uur 助手与专用 Wine 前缀
+uur uninstall --purge --dry-run  # 预览完整用户数据清理范围
+uur uninstall --purge   # 确认清理后，再用包管理器卸载系统包
 ```
 
 从桌面启动 UU 后，可在启动器的应用操作菜单中选择“退出”；从终端运行时可执行
 `uur stop` 或按 Ctrl+C。
+
+仅用包管理器卸载会保留 Wine 环境和账号数据。完整卸载请先以当前用户身份运行
+`uur uninstall --purge`，再执行 `sudo pacman -Rns uur`（Arch）；其他发行版使用
+对应的包管理器。详见[完整卸载说明](docs/distribution.md#package-removal-repair-and-per-user-state)。
 
 输入后端排错：
 

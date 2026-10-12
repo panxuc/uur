@@ -86,6 +86,18 @@ setup:
   silent_install_unavailable: "安装包忽略静默模式；若弹出窗口请手动完成安装"
   done: "已安装至 %{path}"
 
+uninstall:
+  no_root: "请以桌面用户身份运行 uur uninstall，不要加 sudo；系统安装包另用包管理器卸载。"
+  plan: "将删除以下路径（目录包含其内部文件）："
+  purge_warning: "这会永久删除受管客户端、登录与账号数据、Wine 环境、安装包缓存、配置和日志。"
+  keep_data: "保留客户端、账号数据、配置和日志；加 --purge 可一并清除。"
+  package_hint: "系统安装文件和共享依赖由包管理器处理。在 Arch 上，请在此命令完成后执行 sudo pacman -Rns uur。"
+  dry_run: "仅预览，未停止进程，也未修改文件。"
+  confirm_required: "当前没有用于确认的终端。请先查看 --dry-run，再用 --yes 确认卸载。"
+  confirm: "确认删除吗？[y/N]"
+  cancelled: "已取消，未修改文件。"
+  done: "所选用户文件和可识别的源码安装文件已清除。"
+
 autostart:
   enabled: "已启用登录自启动：%{path}"
   disabled: "已禁用登录自启动"

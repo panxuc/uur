@@ -18,28 +18,75 @@ use std::os::fd::AsRawFd;
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::config::Config;
 
 /// Run the capture path until interrupted.
+pub fn run_standalone() -> Result<()> {
+    // Public capture uses the same lifecycle lock as run/setup so stop and
+    // uninstall can also shut down a diagnostic ScreenCast session. Internal
+    // capture already runs under the supervisor's lock.
+    let _session_lock = crate::session::acquire_session_lock()?;
+    run()
+}
+
 pub fn run() -> Result<()> {
     let mut config = Config::load()?;
+    let stopping = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(signal_hook::consts::SIGINT, stopping.clone())?;
+    signal_hook::flag::register(signal_hook::consts::SIGTERM, stopping.clone())?;
     let runtime = tokio::runtime::Runtime::new().context("creating capture runtime")?;
     // The portal's D-Bus connection runs on this runtime. Keep it running
     // throughout capture, including on capture-only compositors such as niri.
     runtime.block_on(async {
-        let (pw_fd, node) = portal_session(&mut config).await?;
+        let (pw_fd, node) = tokio::select! {
+            result = portal_session(&mut config) => result?,
+            _ = wait_for_stop(&stopping) => return Ok(()),
+        };
         println!("{}", t!("capture.session_ready", node = node));
-        let mut helper = spawn_helper(pw_fd, node)?;
-        let status = tokio::task::spawn_blocking(move || helper.wait())
-            .await
-            .context("joining capture helper wait")?
-            .context("waiting for capture helper")?;
-        if !status.success() {
-            anyhow::bail!("{}", t!("capture.helper_failed"));
+        let mut helper = CaptureHelper(spawn_helper(pw_fd, node)?);
+        loop {
+            if stopping.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            if let Some(status) = helper.0.try_wait().context("waiting for capture helper")? {
+                if !status.success() {
+                    anyhow::bail!("{}", t!("capture.helper_failed"));
+                }
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        Ok(())
     })
+}
+
+async fn wait_for_stop(stopping: &AtomicBool) {
+    while !stopping.load(Ordering::Relaxed) {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+struct CaptureHelper(Child);
+
+impl Drop for CaptureHelper {
+    fn drop(&mut self) {
+        if self.0.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        unsafe {
+            libc::kill(self.0.id() as i32, libc::SIGTERM);
+        }
+        for _ in 0..100 {
+            if self.0.try_wait().ok().flatten().is_some() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 pub(crate) fn has_frame(path: &Path) -> bool {
