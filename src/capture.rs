@@ -13,9 +13,10 @@
 //! a headless remote host.
 
 use anyhow::{anyhow, Context, Result};
+use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::os::fd::OwnedFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 
 use crate::config::Config;
@@ -23,15 +24,40 @@ use crate::config::Config;
 /// Run the capture path until interrupted.
 pub fn run() -> Result<()> {
     let mut config = Config::load()?;
-    let (pw_fd, node) = portal_session(&mut config)?;
-    println!("{}", t!("capture.session_ready", node = node));
+    let runtime = tokio::runtime::Runtime::new().context("creating capture runtime")?;
+    // The portal's D-Bus connection runs on this runtime. Keep it running
+    // throughout capture, including on capture-only compositors such as niri.
+    runtime.block_on(async {
+        let (pw_fd, node) = portal_session(&mut config).await?;
+        println!("{}", t!("capture.session_ready", node = node));
+        let mut helper = spawn_helper(pw_fd, node)?;
+        let status = tokio::task::spawn_blocking(move || helper.wait())
+            .await
+            .context("joining capture helper wait")?
+            .context("waiting for capture helper")?;
+        if !status.success() {
+            anyhow::bail!("{}", t!("capture.helper_failed"));
+        }
+        Ok(())
+    })
+}
 
-    let mut helper = spawn_helper(pw_fd, node)?;
-    let status = helper.wait().context("waiting for capture helper")?;
-    if !status.success() {
-        anyhow::bail!("{}", t!("capture.helper_failed"));
+pub(crate) fn has_frame(path: &Path) -> bool {
+    let mut header = [0u8; 64];
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    if file.read_exact(&mut header).is_err() {
+        return false;
     }
-    Ok(())
+    let field = |offset| u32::from_le_bytes(header[offset..offset + 4].try_into().unwrap());
+    field(0) == 0x4652_5555
+        && field(4) == 1
+        && field(8) > 0
+        && field(12) > 0
+        && field(16) >= field(8).saturating_mul(4)
+        && field(20) == 1
+        && u64::from_le_bytes(header[24..32].try_into().unwrap()) > 0
 }
 
 /// Start the native PipeWire consumer with a portal-owned descriptor. The
@@ -78,32 +104,34 @@ fn frame_path() -> Result<PathBuf> {
 /// token, monitor changed, compositor restart) fall back to one
 /// interactive attempt and store the fresh token.
 #[allow(clippy::type_complexity)]
-fn portal_session(config: &mut Config) -> Result<(OwnedFd, u32)> {
+async fn portal_session(config: &mut Config) -> Result<(OwnedFd, u32)> {
     let saved_token = config.capture_restore_token.clone();
-    let runtime = tokio::runtime::Runtime::new().context("creating tokio runtime")?;
-    runtime.block_on(async move {
-        let screencast = ashpd::desktop::screencast::Screencast::new()
-            .await
-            .context("connecting to the ScreenCast portal")?;
+    let screencast = ashpd::desktop::screencast::Screencast::new()
+        .await
+        .context("connecting to the ScreenCast portal")?;
 
-        let mut last_error = None;
-        let source = source_type(&config.capture_source);
-        for token in [saved_token.clone(), None] {
-            match negotiate(&screencast, source, token.as_deref()).await {
-                Ok((fd, node, fresh_token)) => {
-                    if fresh_token != saved_token {
-                        config.capture_restore_token = fresh_token;
-                        config.store().context("storing the new restore token")?;
-                    }
-                    return Ok((fd, node));
+    let mut last_error = None;
+    let source = source_type(&config.capture_source);
+    for token in saved_token
+        .clone()
+        .map(Some)
+        .into_iter()
+        .chain(std::iter::once(None))
+    {
+        match negotiate(&screencast, source, token.as_deref()).await {
+            Ok((fd, node, fresh_token)) => {
+                if fresh_token != saved_token {
+                    config.capture_restore_token = fresh_token;
+                    config.store().context("storing the new restore token")?;
                 }
-                Err(error) => {
-                    last_error = Some(error);
-                }
+                return Ok((fd, node));
+            }
+            Err(error) => {
+                last_error = Some(error);
             }
         }
-        Err(last_error.unwrap_or_else(|| anyhow!("portal session failed")))
-    })
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("portal session failed")))
 }
 
 /// One full portal handshake.  Returns the PipeWire fd, the video node id
@@ -127,7 +155,8 @@ async fn negotiate(
             restore_token,
             PersistMode::ExplicitlyRevoked,
         )
-        .await?;
+        .await?
+        .response()?;
 
     let response = screencast.start(&session, None).await?;
     let streams_response = response.response()?;

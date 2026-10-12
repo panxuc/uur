@@ -46,6 +46,9 @@ enum Command {
         /// Accept the NetEase UU Remote EULA non-interactively.
         #[arg(long)]
         accept_eula: bool,
+        /// Update the existing Wine prefix, retry Wine components, and repair an incomplete client installation.
+        #[arg(long)]
+        repair: bool,
     },
     /// Print the live environment report (sessions, wine, portals, backends).
     Doctor,
@@ -165,7 +168,10 @@ fn main() -> Result<()> {
     i18n::init();
     let cli = Cli::parse();
     match cli.command {
-        Command::Setup { accept_eula } => wine::setup(accept_eula),
+        Command::Setup {
+            accept_eula,
+            repair,
+        } => wine::setup(accept_eula, repair),
         Command::Doctor => doctor::report(),
         Command::Pointer => bridge::print_pointer(),
         Command::Capture => capture::run(),

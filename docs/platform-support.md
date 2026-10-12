@@ -139,8 +139,7 @@ frontend, and a backend exposing both `ScreenCast` and `RemoteDesktop`.
 
 Where those interfaces are available, uur creates one combined session for
 capture and input. This is the preferred unprivileged route. Examples can
-include current GNOME Shell, KDE Plasma, niri with its recommended portal
-configuration, COSMIC, and other sessions whose selected portal backend
+include current GNOME Shell, KDE Plasma, COSMIC, and other sessions whose selected portal backend
 advertises both interfaces. Interface availability—not the desktop name—makes
 the final decision.
 
@@ -151,7 +150,9 @@ input. XTest remains only a partial fallback for XWayland surfaces.
 
 This route commonly applies to compositors using Hyprland or wlroots-oriented
 portal backends, including Hyprland, Sway, Wayfire, river, labwc, dwl, Waybox,
-and other wlroots-based sessions. It may also apply to a desktop whose portal
+and other wlroots-based sessions. niri uses its recommended
+`xdg-desktop-portal-gnome` ScreenCast integration and requires uinput when a
+working RemoteDesktop session is unavailable. It may also apply to a desktop whose portal
 installation is incomplete or whose selected backend omits RemoteDesktop.
 
 Install the compositor's ScreenCast portal and enable uinput access. A
@@ -252,6 +253,78 @@ UUR_INPUT_BACKEND=xtest uur run
 
 An override is a diagnostic tool, not a desktop-specific configuration. The
 default `auto` mode should be used after troubleshooting.
+
+## Interrupted setup and Wine components
+
+Retry an interrupted installation without deleting the managed prefix:
+
+```bash
+uur stop
+uur setup --repair
+uur doctor
+uur run
+```
+
+The repair option runs `wineboot --update` for the managed prefix. This retries
+Wine's component initialization, including its Wine Mono offer where needed.
+It keeps the installed client's data, checks both the client and service
+executables and the Windows service registration, and reruns the official
+installer if that installation is incomplete. Failed initialization or a
+failed/cancelled installer returns an error instead of reporting completion.
+
+The **Wine Mono Installer** is Wine's .NET runtime installer. It is separate
+from **WebView2**, which uur uses for the official client's management UI.
+Cancelling Mono does not establish the cause of a Wayland black screen or
+failed desktop input. Those paths depend on the native capture helper,
+ScreenCast/PipeWire and an authorized RemoteDesktop session or uinput.
+On Arch/CachyOS, installing the matching `wine-mono` package can avoid the
+Wine dialog's network download; use the package supplied for the installed
+Wine version. For the existing 0.1.4 release, the equivalent manual retry is:
+
+```bash
+uur stop
+WINEPREFIX="${XDG_DATA_HOME:-$HOME/.local/share}/uur/wine" \
+  WINEDLLOVERRIDES="wevtapi=b,wtsapi32=b" wineboot --update
+uur setup
+```
+
+To open the Wine program/component manager for this prefix:
+
+```bash
+WINEPREFIX="${XDG_DATA_HOME:-$HOME/.local/share}/uur/wine" \
+  WINEDLLOVERRIDES="wevtapi=b,wtsapi32=b" wine uninstaller
+```
+
+## niri: black video or missing desktop input
+
+Use the niri session entry (or `niri-session`), its recommended
+`xdg-desktop-portal-gnome` backend, and a running PipeWire service. A visible
+Wine window only verifies its XWayland display path. Remote video still needs
+the separate ScreenCast stream, and native Wayland input needs a working
+RemoteDesktop session or writable `/dev/uinput`.
+
+Start with an actual monitor selection:
+
+```bash
+uur display source monitor
+uur doctor
+test -w /dev/uinput && echo 'uinput is writable'
+uur run
+```
+
+If the portal chooser offers **niri Dynamic Cast Target**, that stream remains
+empty until a target is assigned through niri. Select a real monitor when
+diagnosing black video. See [niri's screencasting documentation](https://github.com/niri-wm/niri/wiki/Screencasting).
+If RemoteDesktop creation fails, the automatic policy tries uinput. When both
+are unavailable it reports an error; explicitly selected XTEST can only reach
+XWayland windows. The packaged udev rule and uinput module must be active for
+the logged-in user; restart the graphical session after changing that setup.
+
+`uur run` verifies a real Wayland frame and a running GameViewerService before
+announcing readiness. Startup/helper failures are reported in the terminal;
+details are in `${XDG_STATE_HOME:-$HOME/.local/state}/uur/session.log` and
+`${XDG_DATA_HOME:-$HOME/.local/share}/uur/hook.log`. A missing tray icon alone
+does not determine whether capture or input works.
 
 ## Reading `uur doctor`
 

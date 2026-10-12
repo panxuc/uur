@@ -13,7 +13,7 @@ pub struct Config {
     pub bridge_port: u16,
     /// Random per-install token the hook must present on HELLO.
     pub bridge_token: String,
-    /// Preferred input backend: "auto" | "xtest" | "portal".
+    /// Preferred input backend: "auto" | "xtest" | "portal" | "uinput".
     pub input_backend: String,
     /// Release channel pinned for provisioning.
     pub pinned_version: Option<String>,

@@ -7,6 +7,14 @@ doctor:
   backend_wayland: "Wayland 会话：内核 uinput 注入"
   backend_portal: "Wayland 会话：标准 RemoteDesktop Portal"
   backend_none: "未检测到图形会话"
+  backend_partial: "仅能控制 XWayland 窗口；原生 Wayland 桌面输入需要 Portal 或 uinput"
+  backend_wayland_missing: "完整桌面输入不可用；请检查 RemoteDesktop 授权或 /dev/uinput 访问权限"
+  client_incomplete: "缺少客户端或服务端程序；请运行 uur setup --repair"
+  service_registered: "已注册；uur run 会检查实际启动结果"
+  service_missing: "缺少服务注册；请运行 uur setup --repair"
+  webview_pending: "尚未安装；uur run 会调用客户端自带的 WebView2 安装器"
+  portal_capture_advertised: "已提供源类型；uur run 会检查授权和实际采集帧"
+  portal_input_advertised: "已提供键盘和指针类型；uur run 会检查实际会话授权"
   uinput_module: "设备存在但内核模块未加载（安装包内附的 udev 规则与 modules-load 条目，然后重启）"
   uinput_permission: "当前用户不可写（需要 uur 的 uaccess udev 规则或 input 组）"
   uinput_missing: "此内核没有 /dev/uinput"
@@ -16,12 +24,13 @@ doctor:
   launcher_missing: "缺少 Win64 快速启动代理；请重新安装 uur"
   xdg_launcher_missing: "请安装 GLib 的 gio 或 gtk-launch"
   wallpaper_missing: "未检测到；可将 UUR_WALLPAPER 设为图片路径"
-  footer: "以上均为提示性检查。运行 `uur setup` 安装受管客户端。"
+  footer: "此报告检查安装文件与系统声明的能力。uur run 会验证输入会话、Wayland 采集帧和 Windows 服务启动。安装中断后可运行 uur setup --repair 重试 Wine 初始化。"
 
 input:
   portal_unavailable: "当前会话中 Wayland Portal 输入不可用"
   no_display: "未检测到图形会话（DISPLAY 与 WAYLAND_DISPLAY 均未设置）"
-  uinput_unavailable: "uinput 不可写 —— 回退到 XTEST（仅 XWayland 范围；请加载 uinput 模块或安装 udev 规则以获得完整覆盖）"
+  uinput_unavailable: "内核 uinput 输入不可用"
+  wayland_no_full_input: "Wayland 桌面输入需要可用的 RemoteDesktop Portal 或可写的 /dev/uinput。请检查安装包中的 udev 规则和 uinput 内核模块。显式选择 xtest 只能控制 XWayland 窗口。"
 
 bridge:
   listening: "输入桥监听于 127.0.0.1:%{port}"
@@ -44,6 +53,9 @@ session:
   quick_launch_ready: "已向 UU 快速启动导出 %{count} 个 Linux 应用"
   audio_backend: "Wine 音频后端：%{backend}"
   wine_dpi: "已根据 Xft.dpi 设置 Wine 系统 DPI：%{dpi}"
+  waiting_capture: "正在等待首个 Wayland 采集帧；请在 Portal 对话框中选择监视器"
+  capture_not_ready: "120 秒内未收到 Wayland 采集帧。请检查 ScreenCast Portal 和 PipeWire，选择实际监视器而非尚未指定目标的动态投屏源，并查看会话日志。"
+  service_failed: "GameViewerService 未能启动。请运行 uur setup --repair，并检查 ~/.local/state/uur/session.log 和 ~/.local/share/uur/hook.log。"
 
 upstream:
   unreachable: "无法访问网易官方发布接口"
@@ -65,6 +77,11 @@ setup:
   downloading: "正在从 %{url} 下载官方安装包"
   download_failed: "官方安装包下载失败"
   initializing_prefix: "正在初始化受管 Wine 前缀"
+  prefix_failed: "Wine 前缀初始化失败（%{status}）；解决 Wine 错误后可运行 uur setup --repair 重试"
+  repaired: "已更新 Wine 前缀，并确认 %{path} 中的客户端安装完整"
+  install_failed: "官方安装器失败或被取消（%{status}），安装尚未完成。可运行 uur setup --repair 重试。"
+  client_incomplete: "安装器未提供完整的 GameViewer.exe 与 GameViewerServer.exe；请运行 uur setup --repair 重试"
+  service_incomplete: "GameViewerService 未注册有效的服务程序；请运行 uur setup --repair"
   installing_client: "正在安装官方客户端（静默模式）"
   silent_install_unavailable: "安装包忽略静默模式；若弹出窗口请手动完成安装"
   done: "已安装至 %{path}"

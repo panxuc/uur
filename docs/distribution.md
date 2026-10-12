@@ -111,3 +111,44 @@ uur run
 
 See [Platform support and usage](platform-support.md) for desktop-session and
 portal requirements.
+
+## Package removal, repair, and per-user state
+
+Package removal leaves the managed Wine prefix, downloaded installer cache,
+configuration and logs in the user's XDG directories. This preserves login
+and client data across package upgrades and reinstalls. Reinstalling the
+package therefore does not create a new Wine prefix. Start with
+`uur stop` followed by `uur setup --repair` for an interrupted setup.
+
+For a fresh prefix, stop uur and move the old prefix aside before setup:
+
+```bash
+uur stop
+uur_prefix="${XDG_DATA_HOME:-$HOME/.local/share}/uur/wine"
+mv -- "$uur_prefix" "$uur_prefix.backup-$(date +%Y%m%d-%H%M%S)"
+uur setup --accept-eula
+```
+
+The fresh prefix needs the official client installed and logged in again.
+The backup retains the previous client and account data.
+
+To clear the managed client, configuration and logs, first disable autostart and stop the
+session, then archive the three uur directories. Remove the distribution
+package separately with its package manager:
+
+```bash
+uur autostart disable
+uur stop
+uur_backup="$HOME/uur-backup-$(date +%Y%m%d-%H%M%S)"
+mkdir -m 0700 -- "$uur_backup"
+uur_data="${XDG_DATA_HOME:-$HOME/.local/share}/uur"
+uur_config="${XDG_CONFIG_HOME:-$HOME/.config}/uur"
+uur_state="${XDG_STATE_HOME:-$HOME/.local/state}/uur"
+if test -d "$uur_data"; then mv -- "$uur_data" "$uur_backup/data"; fi
+if test -d "$uur_config"; then mv -- "$uur_config" "$uur_backup/config"; fi
+if test -d "$uur_state"; then mv -- "$uur_state" "$uur_backup/state"; fi
+```
+
+Delete that backup when its client data and logs are no longer needed.
+Unpin any retained Wine-generated launcher after package removal; its command
+is an alias for `uur run`.
