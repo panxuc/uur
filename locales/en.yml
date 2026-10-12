@@ -51,6 +51,9 @@ upstream:
   not_provisioned: "no provisioned client found; run `uur setup`"
 
 capture:
+  direct_enabled: "Direct Wayland monitor capture explicitly enabled; it uses uinput and does not show a portal consent dialog. Use uur display backend portal to restore portal capture."
+  portal_enabled: "Portal-consented capture enabled"
+  direct_started: "direct Wayland monitor capture started"
   session_ready: "portal session ready (video node %{node}); streaming to the private runtime transport"
   helper_failed: "the capture helper exited with an error"
 
@@ -66,6 +69,7 @@ session:
   audio_backend: "Wine audio backend: %{backend}"
   wine_dpi: "Wine system DPI set from Xft.dpi: %{dpi}"
   waiting_capture: "waiting for the first Wayland capture frame; select a monitor in the portal dialog"
+  waiting_direct_capture: "waiting for the first direct Wayland monitor frame"
   capture_not_ready: "No Wayland frames arrived within 120 seconds. Check the ScreenCast portal and PipeWire; select an actual monitor rather than an unassigned dynamic cast target. See the session log."
   service_failed: "GameViewerService did not start. Run uur setup --repair and inspect ~/.local/state/uur/session.log and ~/.local/share/uur/hook.log."
 
@@ -85,6 +89,13 @@ setup:
   installing_client: "installing the official client (silent mode)"
   silent_install_unavailable: "the installer ignored silent mode; complete its window manually if it opened"
   done: "provisioned into %{path}"
+
+tray:
+  title: "UU Remote"
+  tooltip: "UU Remote for Linux"
+  open: "Open UU Remote"
+  quit: "Quit"
+  registered: "native desktop tray registered"
 
 uninstall:
   no_root: "Run uur uninstall as the desktop user, without sudo. Remove the system package separately with its package manager."

@@ -38,7 +38,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            binutils-mingw-w64-x86-64 gcc libpipewire-0.3-dev \
+            binutils-mingw-w64-x86-64 gcc libpipewire-0.3-dev libwayland-dev \
             gcc-mingw-w64-x86-64 pkg-config zstd
       - name: Install nFPM
         env:

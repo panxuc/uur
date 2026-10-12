@@ -346,8 +346,23 @@ pub fn report() -> Result<()> {
     // the compositor can successfully create an authorized session.
     let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
     let on_wayland = session_type == "wayland" || std::env::var_os("WAYLAND_DISPLAY").is_some();
-    let preferred =
-        std::env::var("UUR_INPUT_BACKEND").unwrap_or(crate::config::Config::load()?.input_backend);
+    let configured = crate::config::Config::load()?;
+    line(
+        "info",
+        "capture backend",
+        &format!(
+            "{} ({})",
+            configured.capture_backend,
+            configured
+                .capture_output
+                .as_deref()
+                .unwrap_or("selected/default output")
+        ),
+    );
+    let mut preferred = std::env::var("UUR_INPUT_BACKEND").unwrap_or(configured.input_backend);
+    if configured.capture_backend == "wayland" && preferred == "auto" {
+        preferred = "uinput".into();
+    }
     let (status, backend, backend_note) = match preferred.as_str() {
         "portal" => (
             ok(!portal_input),

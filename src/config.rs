@@ -24,6 +24,10 @@ pub struct Config {
     pub remote_desktop_restore_token: Option<String>,
     /// Portal source type: monitor, window, or virtual.
     pub capture_source: String,
+    /// "portal" uses system consent; "wayland" is explicitly enabled direct monitor capture.
+    pub capture_backend: String,
+    /// Named Wayland output for direct capture; a single-output session needs no name.
+    pub capture_output: Option<String>,
 }
 
 impl Default for Config {
@@ -37,6 +41,8 @@ impl Default for Config {
             capture_restore_token: None,
             remote_desktop_restore_token: None,
             capture_source: "monitor".into(),
+            capture_backend: "portal".into(),
+            capture_output: None,
         }
     }
 }

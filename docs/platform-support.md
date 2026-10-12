@@ -326,6 +326,30 @@ details are in `${XDG_STATE_HOME:-$HOME/.local/state}/uur/session.log` and
 `${XDG_DATA_HOME:-$HOME/.local/share}/uur/hook.log`. A missing tray icon alone
 does not determine whether capture or input works.
 
+For niri and other compositors exposing `wlr-screencopy`, uur also offers
+direct, shared-memory monitor capture. This path avoids portal/PipeWire/GBM
+dependencies for video and is useful when a portal cannot produce frames:
+
+```bash
+uur display outputs
+uur display backend wayland --output DP-1  # Use the name printed above
+uur run
+```
+
+Selecting `wayland` explicitly authorizes direct monitor capture for later
+runs. It does not show a system screen-sharing dialog and does not activate
+automatically after portal cancellation or failure. With one output, `--output`
+can be omitted; multiple outputs require an explicit name. Automatic input
+selection uses uinput in this mode. Run `uur display backend portal` to return
+to portal-consented capture. Direct mode captures a monitor, not individual
+windows or virtual portal sources; changes to its size require restarting
+the session.
+
+The supervised native StatusNotifierItem supplies its own icon pixels and
+DBusMenu to Noctalia, Plasma and other compatible panels. Right-click it for
+Open UU Remote and Quit. It re-registers when the panel's watcher restarts;
+it does not depend on Wine's legacy tray being visible.
+
 ## Reading `uur doctor`
 
 - `portal ScreenCast`: required to capture a Wayland desktop.

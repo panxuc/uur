@@ -25,13 +25,13 @@ for component in "${components[@]}"; do
         exit 1
     }
 done
-[[ -f "$root/capture/uur-pw-capture" ]] || {
+[[ -f "$root/capture/uur-pw-capture" && -f "$root/capture/uur-wl-capture" ]] || {
     printf 'missing capture helper — run: ./capture/build.sh\n' >&2
     exit 1
 }
 
 install -Dm0755 "$root/target/release/uur" "$prefix/bin/uur"
-for helper in uur-pw-capture; do
+for helper in uur-pw-capture uur-wl-capture; do
     install -Dm0755 "$root/capture/$helper" "$prefix/lib/uur/$helper"
 done
 for dll in "${components[@]}"; do

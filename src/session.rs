@@ -498,6 +498,10 @@ pub fn start() -> Result<()> {
     signal_hook::flag::register(signal_hook::consts::SIGHUP, stopping.clone())?;
 
     let log = open_session_log()?;
+    match ManagedChild::spawn_internal("__tray", &log) {
+        Ok(helper) => resources.helpers.push(helper),
+        Err(error) => eprintln!("native tray unavailable: {error}"),
+    }
     let _ = std::fs::remove_file(&terminal_config);
     std::env::set_var("UUR_TERMINAL_CONFIG", &terminal_config);
     resources.cleanup_files.push(terminal_config.clone());
@@ -535,7 +539,14 @@ pub fn start() -> Result<()> {
             .push(ManagedChild::spawn_internal("__capture", &log)?);
     }
     if on_wayland {
-        println!("{}", t!("session.waiting_capture"));
+        println!(
+            "{}",
+            if config.capture_backend == "wayland" {
+                t!("session.waiting_direct_capture").to_string()
+            } else {
+                t!("session.waiting_capture").to_string()
+            }
+        );
         wait_for_capture(&frames, &stopping, &mut resources)?;
     }
 
@@ -747,6 +758,35 @@ pub fn stop() -> Result<()> {
         let _ = std::fs::remove_file(path);
     }
     println!("{}", t!("bridge.stop_requested"));
+    Ok(())
+}
+
+/// Activate the official client's existing single-instance UI from the
+/// native tray without starting another capture/input supervisor.
+pub(crate) fn show_client() -> Result<()> {
+    let prefix = data_dir()?.join("wine");
+    let install =
+        crate::wine::find_client_dir(&prefix).context("managed client is not installed")?;
+    let Some((pid, start)) = read_session_identity()? else {
+        anyhow::bail!("managed session is not running");
+    };
+    if process_start_time(pid).ok() != Some(start) {
+        anyhow::bail!("managed session is not running");
+    }
+    let mut child = Command::new("wine")
+        .env("WINEPREFIX", prefix)
+        .env("WINEDEBUG", wine_debug())
+        .env("WINEDLLOVERRIDES", "wevtapi=n,wtsapi32=n")
+        .current_dir(&install)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .arg(install.join("GameViewer.exe"))
+        .spawn()
+        .context("showing the managed client")?;
+    thread::spawn(move || {
+        let _ = child.wait();
+    });
     Ok(())
 }
 

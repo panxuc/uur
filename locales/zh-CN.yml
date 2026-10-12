@@ -54,6 +54,7 @@ session:
   audio_backend: "Wine 音频后端：%{backend}"
   wine_dpi: "已根据 Xft.dpi 设置 Wine 系统 DPI：%{dpi}"
   waiting_capture: "正在等待首个 Wayland 采集帧；请在 Portal 对话框中选择监视器"
+  waiting_direct_capture: "正在等待原生 Wayland 显示器采集的首帧"
   capture_not_ready: "120 秒内未收到 Wayland 采集帧。请检查 ScreenCast Portal 和 PipeWire，选择实际监视器而非尚未指定目标的动态投屏源，并查看会话日志。"
   service_failed: "GameViewerService 未能启动。请运行 uur setup --repair，并检查 ~/.local/state/uur/session.log 和 ~/.local/share/uur/hook.log。"
 
@@ -66,6 +67,9 @@ upstream:
   not_provisioned: "尚未安装受管客户端；请运行 `uur setup`"
 
 capture:
+  direct_enabled: "已明确启用原生 Wayland 显示器采集，输入使用 uinput，不再弹出 Portal 选屏授权框。运行 uur display backend portal 可恢复 Portal 采集。"
+  portal_enabled: "已启用 Portal 授权采集"
+  direct_started: "已启动原生 Wayland 显示器采集"
   session_ready: "Portal 会话已建立（视频节点 %{node}）；正在写入私有运行时传输"
   helper_failed: "捕获助手异常退出"
 
@@ -85,6 +89,13 @@ setup:
   installing_client: "正在安装官方客户端（静默模式）"
   silent_install_unavailable: "安装包忽略静默模式；若弹出窗口请手动完成安装"
   done: "已安装至 %{path}"
+
+tray:
+  title: "UU 远程"
+  tooltip: "UU 远程 Linux 客户端"
+  open: "打开 UU 远程"
+  quit: "退出"
+  registered: "已注册原生桌面托盘"
 
 uninstall:
   no_root: "请以桌面用户身份运行 uur uninstall，不要加 sudo；系统安装包另用包管理器卸载。"

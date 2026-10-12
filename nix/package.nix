@@ -7,6 +7,7 @@
   makeWrapper,
   bash,
   pipewire,
+  wayland,
   pulseaudio,
   curl,
   glib,
@@ -34,8 +35,9 @@ rustPlatform.buildRustPackage {
     windowsCC
     windowsBinutils
     bash
+    wayland
   ];
-  buildInputs = [ pipewire ];
+  buildInputs = [ pipewire wayland ];
 
   CC = "${stdenv.cc}/bin/cc";
   UUR_BUILD_SHELL = runtimeShell;

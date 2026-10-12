@@ -37,6 +37,31 @@ pub fn run() -> Result<()> {
     let stopping = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGINT, stopping.clone())?;
     signal_hook::flag::register(signal_hook::consts::SIGTERM, stopping.clone())?;
+    if config.capture_backend == "wayland" {
+        if config.capture_source != "monitor" {
+            anyhow::bail!("direct Wayland capture requires a monitor source");
+        }
+        let mut command = Command::new(find_helper("uur-wl-capture")?);
+        command.env("UUR_FRAME_PATH", frame_path()?);
+        if let Some(output) = &config.capture_output {
+            command.env("UUR_CAPTURE_OUTPUT", output);
+        }
+        let mut helper = CaptureHelper(command.spawn().context("starting direct Wayland capture")?);
+        println!("{}", t!("capture.direct_started"));
+        while !stopping.load(Ordering::Relaxed) {
+            if let Some(status) = helper.0.try_wait()? {
+                if !status.success() {
+                    anyhow::bail!("direct Wayland capture failed ({status})");
+                }
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        return Ok(());
+    }
+    if config.capture_backend != "portal" {
+        anyhow::bail!("unknown capture backend {:?}", config.capture_backend);
+    }
     let runtime = tokio::runtime::Runtime::new().context("creating capture runtime")?;
     // The portal's D-Bus connection runs on this runtime. Keep it running
     // throughout capture, including on capture-only compositors such as niri.
@@ -124,7 +149,7 @@ pub(crate) fn spawn_helper(pw_fd: OwnedFd, node: u32) -> Result<Child> {
         }
     }
 
-    let helper = find_helper()?;
+    let helper = find_helper("uur-pw-capture")?;
     let mut command = Command::new(&helper);
     command
         .env("UUR_PW_FD", raw.to_string())
@@ -228,28 +253,37 @@ pub(crate) fn source_type(value: &str) -> ashpd::desktop::screencast::SourceType
     }
 }
 
-fn find_helper() -> Result<PathBuf> {
+pub fn list_wayland_outputs() -> Result<()> {
+    let status = Command::new(find_helper("uur-wl-capture")?)
+        .arg("--list-outputs")
+        .status()?;
+    anyhow::ensure!(status.success(), "could not enumerate Wayland outputs");
+    Ok(())
+}
+
+fn find_helper(name: &str) -> Result<PathBuf> {
     let mut candidates = vec![
-        PathBuf::from("/usr/lib/uur/uur-pw-capture"),
-        PathBuf::from("/usr/local/lib/uur/uur-pw-capture"),
+        PathBuf::from("/usr/lib/uur").join(name),
+        PathBuf::from("/usr/local/lib/uur").join(name),
     ];
     if let Ok(home) = std::env::var("HOME") {
-        candidates.push(PathBuf::from(home).join(".local/lib/uur/uur-pw-capture"));
+        candidates.push(PathBuf::from(home).join(".local/lib/uur").join(name));
     }
     if let Ok(exe) = std::env::current_exe() {
         // dev checkout: target/debug/uur -> capture/uur-pw-capture
         if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("../lib/uur/uur-pw-capture"));
-            candidates.push(dir.join("../../capture/uur-pw-capture"));
-            candidates.push(dir.join("uur-pw-capture"));
+            candidates.push(dir.join("../lib/uur").join(name));
+            candidates.push(dir.join("../../capture").join(name));
+            candidates.push(dir.join(name));
         }
     }
     if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join("capture/uur-pw-capture"));
+        candidates.push(cwd.join("capture").join(name));
     }
-    candidates.into_iter().find(|p| p.is_file()).ok_or_else(|| {
-        anyhow!("capture helper uur-pw-capture not found (build with capture/build.sh)")
-    })
+    candidates
+        .into_iter()
+        .find(|p| p.is_file())
+        .ok_or_else(|| anyhow!("capture helper {name} not found (build with capture/build.sh)"))
 }
 
 #[cfg(test)]

@@ -95,7 +95,7 @@ cargo build --release --locked
 ```
 
 This installs under `~/.local` by default. It requires Rust, a native C
-compiler, PipeWire development files, `pkg-config`, and the MinGW-w64 x86_64
+compiler, PipeWire and Wayland development files (including `wayland-scanner`), `pkg-config`, and the MinGW-w64 x86_64
 toolchain.
 
 ## Required first run
