@@ -73,7 +73,7 @@ jobs:
       - name: Install Arch build dependencies
         run: |
           pacman -Syu --noconfirm \
-            cargo rust gcc pkgconf pipewire \
+            cargo rust gcc pkgconf pipewire wayland \
             mingw-w64-gcc mingw-w64-binutils
       - name: Build native pacman package with makepkg
         run: |

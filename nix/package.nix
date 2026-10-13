@@ -8,6 +8,7 @@
   bash,
   pipewire,
   wayland,
+  wayland-scanner,
   pulseaudio,
   curl,
   glib,
@@ -35,7 +36,7 @@ rustPlatform.buildRustPackage {
     windowsCC
     windowsBinutils
     bash
-    wayland
+    wayland-scanner
   ];
   buildInputs = [ pipewire wayland ];
 
