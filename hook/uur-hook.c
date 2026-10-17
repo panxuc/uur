@@ -496,7 +496,9 @@ static BOOL feed_capture_frame_locked(HDC hdc_dest, int x, int y, int width,
              * for that monitor's whole rectangle.  Wine reports the
              * compositor's monitors in its own order, so the virtual desktop
              * is only the right basis for a partial request; a complete
-             * monitor request must map onto the whole frame. */
+             * monitor request must map onto the whole frame. Fractional
+             * scaling can give Xwayland and the portal different pixel
+             * sizes, so compare aspect ratios rather than resolutions. */
             int sx = 0;
             int sy = 0;
             int sw = 0;
@@ -518,8 +520,8 @@ static BOOL feed_capture_frame_locked(HDC hdc_dest, int x, int y, int width,
                     info.rcMonitor.top == requested.top &&
                     info.rcMonitor.right == requested.right &&
                     info.rcMonitor.bottom == requested.bottom &&
-                    info.rcMonitor.right - info.rcMonitor.left == (LONG)fw &&
-                    info.rcMonitor.bottom - info.rcMonitor.top == (LONG)fh;
+                    (int64_t)(info.rcMonitor.right - info.rcMonitor.left) * fh ==
+                        (int64_t)(info.rcMonitor.bottom - info.rcMonitor.top) * fw;
             }
             if (whole_monitor) {
                 sx = 0;
