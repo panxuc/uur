@@ -12,6 +12,8 @@ install -Dm0755 "$project_root/capture/uur-pw-capture" \
     "$destination$prefix/lib/uur/uur-pw-capture"
 install -Dm0755 "$project_root/capture/uur-wl-capture" \
     "$destination$prefix/lib/uur/uur-wl-capture"
+install -Dm0755 "$project_root/build/compat/libuur-lock-mods.so" \
+    "$destination$prefix/lib/uur/libuur-lock-mods.so"
 install -Dm0755 "$project_root/packaging/post-install-message" \
     "$destination$prefix/lib/uur/post-install-message"
 for component in wevtapi.dll uur-hook.dll wtsapi32.dll winlogon.exe uur-terminal-proxy.exe uur-mux-proxy.exe uur-launch-proxy.exe; do

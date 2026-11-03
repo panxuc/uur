@@ -6,7 +6,7 @@ adapts stable Windows APIs at runtime; the Rust host owns policy, desktop
 integration, and process lifetime.
 
 ```text
-UU Remote / Wine
+UU Remote / Wine  (LD_PRELOAD: compat/libuur-lock-mods.so)
   └─ PE ABI adapter (SendInput, GDI/DXGI capture entry points)
        └─ authenticated loopback protocol + private frame transport
             └─ Rust session supervisor

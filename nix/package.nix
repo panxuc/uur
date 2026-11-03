@@ -45,7 +45,7 @@ rustPlatform.buildRustPackage {
   doCheck = false;
 
   postPatch = ''
-    patchShebangs hook/build.sh capture/build.sh packaging/stage.sh
+    patchShebangs hook/build.sh capture/build.sh compat/build.sh packaging/stage.sh
   '';
 
   postBuild = ''
@@ -54,6 +54,7 @@ rustPlatform.buildRustPackage {
     UU_MINGW_DLLTOOL=${windowsBinutils}/bin/${targetPrefix}dlltool \
       ./hook/build.sh
     ./capture/build.sh
+    ./compat/build.sh
   '';
 
   installPhase = ''

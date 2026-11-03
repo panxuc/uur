@@ -132,6 +132,24 @@ Openbox, Fluxbox, IceWM, dwm, qtile, herbstluftwm, spectrwm, and FVWM.
 Wine captures the X11 desktop directly and uur injects input with XTest. A
 ScreenCast portal is not required for this path.
 
+#### Lock modifier bits in the client's key events
+
+Wine's X11 driver reconciles its asynchronous Windows keyboard state with the
+modifier bits carried by every X11 key event, and injects a synthetic lock-key
+down/up pair whenever the two disagree. The official client installs a
+low-level keyboard hook that swallows those synthetic keys, so the mismatch
+never resolves and Wine forges one `VK_NUMLOCK` pair *per keystroke*. Peers on
+Windows mostly ignore the stray modifier; on macOS the same bit is interpreted
+as Command, so ordinary typing turns into system shortcuts.
+
+`uur` therefore `LD_PRELOAD`s `libuur-lock-mods.so` into the managed Wine
+processes. It clears the lock modifier bits from `event->state` before the
+application observes each key event, so Wine's reconciliation always agrees
+and no synthetic key is produced. Only the child process environment is
+affected: the X server, the compositor, and the user's NumLock setting are
+never modified. The mask defaults to `0x50` (Mod2/NumLock and Mod4/Super) and
+can be changed with `strip_lock_mods` in `config.toml`; `0` disables it.
+
 ### Wayland session with ScreenCast and RemoteDesktop portals
 
 Requirements: a working session D-Bus, PipeWire, the xdg-desktop-portal
