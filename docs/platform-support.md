@@ -100,6 +100,7 @@ Alternatively, build and install for one user:
 cargo build --release --locked
 ./hook/build.sh
 ./capture/build.sh
+./compat/build.sh
 ./scripts/install-user.sh
 ```
 

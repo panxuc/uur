@@ -13,6 +13,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      - name: Install X11 headers for the shim self test
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libx11-dev xvfb
       - name: Rust checks
         run: |
           cargo fmt --check
@@ -22,6 +24,17 @@ jobs:
           /tmp/frame-protocol
           cc -std=c11 -O2 -Wall -Wextra -Werror tests/cursor-overlay.c -o /tmp/cursor-overlay
           /tmp/cursor-overlay
+      - name: Build and test the lock-mod shim
+        run: |
+          ./compat/build.sh
+          # Without the shim the bits survive (exit 1); with it they are stripped.
+          if xvfb-run -a ./build/compat/uur-lock-mods-selftest; then
+            printf 'shim self test: bits survived without the shim\n' >&2
+            exit 1
+          fi
+          xvfb-run -a env UUR_LOCKSTRIP_FORCE=1 \
+            LD_PRELOAD="$PWD/build/compat/libuur-lock-mods.so" \
+            ./build/compat/uur-lock-mods-selftest
       - name: Build
         run: cargo build --locked --release
 
@@ -50,13 +63,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             appstream binutils-mingw-w64-x86-64 desktop-file-utils \
-            gcc gcc-mingw-w64-x86-64 libpipewire-0.3-dev libwayland-dev pkg-config \
-            wine xvfb
+            gcc gcc-mingw-w64-x86-64 libpipewire-0.3-dev libwayland-dev \
+            libx11-dev libxtst-dev pkg-config wine xvfb
       - name: Build and stage
         run: |
           cargo build --release --locked
           ./hook/build.sh
           ./capture/build.sh
+          ./compat/build.sh
           stage="$(mktemp -d)"
           ./packaging/stage.sh "$stage"
           test -x "$stage/usr/bin/uur"

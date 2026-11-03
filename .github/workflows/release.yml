@@ -73,7 +73,7 @@ jobs:
       - name: Install Arch build dependencies
         run: |
           pacman -Syu --noconfirm \
-            cargo rust gcc pkgconf pipewire wayland \
+            cargo rust gcc pkgconf pipewire wayland libx11 \
             mingw-w64-gcc mingw-w64-binutils
       - name: Build native pacman package with makepkg
         run: |
@@ -84,6 +84,7 @@ jobs:
             CARGO_BUILD_JOBS=2 cargo build --release --locked
             ./hook/build.sh
             ./capture/build.sh
+            ./compat/build.sh
             ./packaging/build-arch-package.sh "$1/dist"
           ' _ "$GITHUB_WORKSPACE"
       - uses: actions/upload-artifact@v4

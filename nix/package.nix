@@ -9,6 +9,7 @@
   pipewire,
   wayland,
   wayland-scanner,
+  xorg,
   pulseaudio,
   curl,
   glib,
@@ -38,7 +39,7 @@ rustPlatform.buildRustPackage {
     bash
     wayland-scanner
   ];
-  buildInputs = [ pipewire wayland ];
+  buildInputs = [ pipewire wayland xorg.libX11 xorg.libXext ];
 
   CC = "${stdenv.cc}/bin/cc";
   UUR_BUILD_SHELL = runtimeShell;

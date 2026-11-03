@@ -52,6 +52,7 @@ build() {
     cargo build --release --locked
     ./hook/build.sh
     ./capture/build.sh
+    ./compat/build.sh
 }
 
 check() {

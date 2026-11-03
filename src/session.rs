@@ -110,10 +110,17 @@ fn apply_lock_mods_env(command: &mut Command, config: &Config) {
         eprintln!("lock-modifier shim not found; leaving Wine keyboard handling untouched");
         return;
     };
+    // The dynamic loader splits LD_PRELOAD on ':' and whitespace and offers no
+    // escaping, so a path containing either cannot be expressed there.
+    let shim = shim.to_string_lossy();
+    if shim.contains([':', ' ', '\t']) {
+        eprintln!("lock-modifier shim path cannot be expressed in LD_PRELOAD; skipping it");
+        return;
+    }
     command.env("UUR_STRIP_LOCK_MODS", mask);
     let preload = match std::env::var("LD_PRELOAD") {
-        Ok(existing) if !existing.is_empty() => format!("{}:{}", shim.display(), existing),
-        _ => shim.display().to_string(),
+        Ok(existing) if !existing.is_empty() => format!("{shim}:{existing}"),
+        _ => shim.into_owned(),
     };
     command.env("LD_PRELOAD", preload);
 }
@@ -1213,6 +1220,25 @@ mod tests {
         let preload = command_env(&command, "LD_PRELOAD").expect("preload set");
         assert!(preload.ends_with("/build/compat/libuur-lock-mods.so:/nonexistent/first.so"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lock_modifier_env_reports_missing_shim_without_failing() {
+        let config = Config::default();
+        let previous = std::env::current_dir().expect("reading the working directory");
+        let empty = std::env::temp_dir().join(format!("uur-no-shim-{}", std::process::id()));
+        std::fs::create_dir_all(&empty).expect("creating the empty tree");
+        std::env::set_current_dir(&empty).expect("entering the empty tree");
+        let mut command = Command::new("wine");
+        apply_lock_mods_env(&mut command, &config);
+        std::env::set_current_dir(&previous).expect("restoring the working directory");
+        let _ = std::fs::remove_dir_all(&empty);
+        // Either the shim was found elsewhere on this machine (fine) or the
+        // helper declined to set anything (also fine); it must never panic
+        // and must never leave a dangling mask without a preload.
+        let mask = command_env(&command, "UUR_STRIP_LOCK_MODS");
+        let preload = command_env(&command, "LD_PRELOAD");
+        assert_eq!(mask.is_some(), preload.is_some());
     }
 
     #[test]

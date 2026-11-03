@@ -29,11 +29,17 @@ done
     printf 'missing capture helper — run: ./capture/build.sh\n' >&2
     exit 1
 }
+[[ -f "$root/build/compat/libuur-lock-mods.so" ]] || {
+    printf 'missing lock-modifier shim — run: ./compat/build.sh\n' >&2
+    exit 1
+}
 
 install -Dm0755 "$root/target/release/uur" "$prefix/bin/uur"
 for helper in uur-pw-capture uur-wl-capture; do
     install -Dm0755 "$root/capture/$helper" "$prefix/lib/uur/$helper"
 done
+install -Dm0755 "$root/build/compat/libuur-lock-mods.so" \
+    "$prefix/lib/uur/libuur-lock-mods.so"
 for dll in "${components[@]}"; do
     install -Dm0644 "$root/build/hook/$dll" "$prefix/lib/uur/hook/$dll"
 done
