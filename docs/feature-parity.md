@@ -12,8 +12,8 @@
 | Wayland virtual source | available when advertised | `uur display source virtual` → ScreenCast Virtual source |
 | Wayland multi-screen capture | available | Multiple PipeWire streams → virtual desktop composite → per-monitor crops |
 | Clipboard and phone IME text | planned | RemoteDesktop Clipboard portal, then X11 fallback |
-| Speaker and microphone audio | available through Wine | PulseAudio, pipewire-pulse, or ALSA selected from live capabilities |
-| System-audio loopback and remote mute | Wine integration | WASAPI → winepulse/winealsa |
+| Speaker and microphone audio | Wine fallback capture | PulseAudio, pipewire-pulse, or ALSA; proprietary dual-channel audio driver unavailable |
+| System-audio loopback | explicit default-input override | `uur audio source system` selects a real PulseAudio monitor for the fallback stream; remote mute needs separate validation |
 | Native tray | implemented | StatusNotifierItem + DBusMenu, supervised with the session; no Wine XEmbed dependency |
 | Terminal | available | ConPTY/mux ABI adapters → authenticated native Rust PTY/login shell |
 | Quick Launch | implemented | Windows app inventory adapter → XDG desktop catalog → `gio launch` |

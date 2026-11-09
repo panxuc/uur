@@ -247,6 +247,17 @@ pub fn report() -> Result<()> {
 
     let audio = crate::audio::detect();
     line("info", "audio backend", audio.label());
+    let audio_config = crate::config::Config::load()?;
+    match crate::audio::capture_source(audio_config.audio_capture_source.as_deref()) {
+        Ok(source) => line(
+            "info",
+            "Wine default audio capture",
+            source
+                .as_deref()
+                .unwrap_or("existing audio environment; may be a microphone"),
+        ),
+        Err(error) => line("warn", "Wine default audio capture", &format!("{error:#}")),
+    }
 
     let video = crate::video::detect();
     line(

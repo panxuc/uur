@@ -34,6 +34,9 @@ pub struct Config {
     pub capture_backend: String,
     /// Named Wayland output for direct capture; a single-output session needs no name.
     pub capture_output: Option<String>,
+    /// Override Wine's default capture source: "system" or a PulseAudio source
+    /// name. None follows the user's existing audio environment.
+    pub audio_capture_source: Option<String>,
     /// Strip these X11 modifier bits from key events handed to the managed
     /// client.  Wine reconciles its asynchronous keyboard state against the
     /// modifier bits on every key event and, when the client's low-level hook
@@ -58,6 +61,7 @@ impl Default for Config {
             capture_multiple: false,
             capture_backend: "portal".into(),
             capture_output: None,
+            audio_capture_source: None,
             strip_lock_mods: Some("auto".into()),
         }
     }

@@ -300,8 +300,8 @@ fn deploy_terminal_proxy(install_dir: &Path) -> Result<PathBuf> {
 /// bootstrapper ships inside the client's bin directory.
 const WEBVIEW2_DLL_OVERRIDES: &str = "wtsapi32=b,wevtapi=b";
 
-fn webview2_install_command(prefix: &Path, bootstrapper: &Path) -> Command {
-    let mut command = crate::wine::command(prefix);
+fn webview2_install_command(prefix: &Path, bootstrapper: &Path) -> Result<Command> {
+    let mut command = crate::wine::command(prefix)?;
     command
         .env("WINEPREFIX", prefix)
         .env("WINEDEBUG", wine_debug())
@@ -311,7 +311,7 @@ fn webview2_install_command(prefix: &Path, bootstrapper: &Path) -> Command {
         .env("WINEDLLOVERRIDES", WEBVIEW2_DLL_OVERRIDES)
         .arg(bootstrapper)
         .args(["/silent", "/install"]);
-    command
+    Ok(command)
 }
 
 fn ensure_webview2(prefix: &Path, install_dir: &Path) -> Result<()> {
@@ -324,7 +324,7 @@ fn ensure_webview2(prefix: &Path, install_dir: &Path) -> Result<()> {
         anyhow::bail!("{}", t!("session.webview_missing"));
     }
     println!("{}", t!("session.installing_webview"));
-    let status = webview2_install_command(prefix, &bootstrapper)
+    let status = webview2_install_command(prefix, &bootstrapper)?
         .status()
         .context("running the WebView2 bootstrapper")?;
     if !status.success() || !crate::wine::webview2_installed(prefix) {
@@ -501,7 +501,10 @@ pub fn start() -> Result<()> {
         anyhow::bail!("{}", t!("setup.service_incomplete"));
     }
     let mut resources = SessionResources::new(prefix.clone());
-    if lock_mods_mask(&config)?.is_some() && lock_mods_shim().is_some() {
+    let selected_audio = crate::audio::capture_source(config.audio_capture_source.as_deref())?;
+    if selected_audio.is_some()
+        || (lock_mods_mask(&config)?.is_some() && lock_mods_shim().is_some())
+    {
         // A server left by setup or an older client has the old environment.
         // The session lock excludes a running uur session; restart only this
         // managed prefix so its SCM-spawned clients inherit the same shim.
@@ -626,7 +629,7 @@ pub fn start() -> Result<()> {
     // Windows process table without repeatedly initializing Wine utilities.
     use std::os::unix::process::CommandExt;
     let marker = hook_dir()?.join("winlogon.exe");
-    let mut monitor = crate::wine::command(&prefix)
+    let mut monitor = crate::wine::command(&prefix)?
         .env("WINEPREFIX", &prefix)
         .env("WINEDEBUG", wine_debug())
         .env("WINEDLLOVERRIDES", "wevtapi=b;wtsapi32=b")
@@ -655,7 +658,7 @@ pub fn start() -> Result<()> {
     // waits forever.
     if !service_running(&prefix) {
         let _ = run_with_timeout(
-            crate::wine::command(&prefix)
+            crate::wine::command(&prefix)?
                 .env("WINEPREFIX", &prefix)
                 .env("WINEDEBUG", wine_debug())
                 .env("WINEDLLOVERRIDES", "wevtapi=b;wtsapi32=b")
@@ -679,7 +682,7 @@ pub fn start() -> Result<()> {
     println!("{}", t!("session.launching_client"));
     let ui = install_dir.join("GameViewer.exe");
     let launch = || -> Result<Child> {
-        let mut command = crate::wine::command(&prefix);
+        let mut command = crate::wine::command(&prefix)?;
         command
             .env("WINEPREFIX", &prefix)
             .env("WINEDEBUG", wine_debug())
@@ -852,8 +855,11 @@ fn run_with_timeout(command: &mut Command, timeout: std::time::Duration) -> Opti
 
 /// True when the Windows service reports STATE 4 (RUNNING) via `sc query`.
 fn service_running(prefix: &Path) -> bool {
+    let Ok(mut command) = crate::wine::command(prefix) else {
+        return false;
+    };
     let output = run_with_timeout(
-        crate::wine::command(prefix)
+        command
             .env("WINEPREFIX", prefix)
             .env("WINEDEBUG", wine_debug())
             .env("WINEDLLOVERRIDES", "wevtapi=b;wtsapi32=b")
@@ -911,7 +917,7 @@ pub(crate) fn show_client() -> Result<()> {
     if process_start_time(pid).ok() != Some(start) {
         anyhow::bail!("managed session is not running");
     }
-    let mut command = crate::wine::command(&prefix);
+    let mut command = crate::wine::command(&prefix)?;
     command
         .env("WINEPREFIX", prefix)
         .env("WINEDEBUG", wine_debug())
@@ -1346,7 +1352,8 @@ mod tests {
         let command = webview2_install_command(
             Path::new("/tmp/uur-wine-prefix"),
             Path::new("/tmp/MicrosoftEdgeWebview2Setup.exe"),
-        );
+        )
+        .unwrap();
         let overrides = command
             .get_envs()
             .find_map(|(name, value)| (name == OsStr::new("WINEDLLOVERRIDES")).then_some(value))

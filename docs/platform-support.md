@@ -205,6 +205,27 @@ the `pipewire-pulse` compatibility server. A native PipeWire session without
 PulseAudio compatibility uses Wine's ALSA driver. `uur doctor` prints the live
 choice; this is independent from PipeWire's Wayland video role.
 
+UU's `nevaudio.sys` driver is unavailable under Wine. Its fallback can label
+the default recording input as system sound, even when that input is a physical
+microphone. To choose system sound explicitly with PulseAudio or pipewire-pulse:
+
+```bash
+uur audio sources
+uur audio source system
+uur stop
+uur run
+```
+
+`system` resolves the default output's real monitor source before startup;
+an unavailable selection stops startup with a diagnostic. The override applies
+only to Wine's default capture endpoint in this managed prefix. An explicitly
+selected device in UU keeps its own routing. Host audio defaults and other apps
+are unchanged. `uur audio source SOURCE_NAME` selects another listed input;
+`uur audio source default` follows the existing audio environment again.
+The selected output is resolved again on the next session, so restart after
+changing audio hardware. This provides one fallback capture stream; simultaneous
+independent speaker and microphone channels still need the official driver.
+
 ### Displays and virtual sources
 
 ```bash

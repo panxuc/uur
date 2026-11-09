@@ -66,7 +66,7 @@ pub fn prepare(prefix: &Path, proxy: &Path) -> Result<usize> {
     std::fs::write(root.with_extension("keys"), keys.join("\n") + "\n")?;
     let registry_path = prefix.join("drive_c/uur-linux-apps.reg");
     write_utf16_registry(&registry_path, &registry)?;
-    let status = crate::wine::command(prefix)
+    let status = crate::wine::command(prefix)?
         .env("WINEPREFIX", prefix)
         .env("WINEDEBUG", "-all")
         .args(["reg", "import"])

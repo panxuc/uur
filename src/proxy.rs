@@ -60,7 +60,7 @@ fn proxy_endpoint(value: &str) -> Option<String> {
 }
 
 fn reg_add(prefix: &Path, value: &str, kind: &str, data: &str) -> Result<()> {
-    let status = crate::wine::command(prefix)
+    let status = crate::wine::command(prefix)?
         .env("WINEPREFIX", prefix)
         .env("WINEDEBUG", "-all")
         .args([

@@ -72,6 +72,7 @@ fn installed_version() -> Option<String> {
     let prefix = crate::config::data_dir().ok()?.join("wine");
     crate::wine::find_client_dir(&prefix)?;
     let output = crate::wine::command(&prefix)
+        .ok()?
         .env("WINEPREFIX", &prefix)
         .env("WINEDEBUG", "-all")
         .args([

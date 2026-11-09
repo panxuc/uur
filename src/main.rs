@@ -89,6 +89,11 @@ enum Command {
         #[command(subcommand)]
         action: DisplayAction,
     },
+    /// Select Wine's default microphone/system-audio capture source.
+    Audio {
+        #[command(subcommand)]
+        action: AudioAction,
+    },
     /// Internal input bridge process. Not part of the public CLI.
     #[command(hide = true, name = "__bridge")]
     InternalBridge,
@@ -174,6 +179,14 @@ enum DisplayAction {
     Outputs,
 }
 
+#[derive(Subcommand)]
+enum AudioAction {
+    /// List real capture inputs and system-audio monitor sources.
+    Sources,
+    /// Use system sound, a source name, or default to follow the existing environment.
+    Source { source: String },
+}
+
 #[derive(Clone, ValueEnum)]
 enum CaptureBackend {
     Portal,
@@ -212,6 +225,10 @@ fn main() -> Result<()> {
         Command::Doctor => doctor::report(),
         Command::Pointer => bridge::print_pointer(),
         Command::Capture => capture::run_standalone(),
+        Command::Audio { action } => match action {
+            AudioAction::Sources => audio::print_sources(),
+            AudioAction::Source { source } => audio::configure_source(&source),
+        },
         Command::Run => session::start(),
         Command::Stop => session::stop(),
         Command::Uninstall {
