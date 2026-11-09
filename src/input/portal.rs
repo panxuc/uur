@@ -205,12 +205,17 @@ impl PortalBackend {
     }
 
     fn submit(&self, event: impl FnOnce(Reply) -> Event) -> Result<()> {
+        if let Some(error) = self.failure.lock().unwrap().clone() {
+            anyhow::bail!("portal input session failed: {error}");
+        }
         let (reply_sender, reply_receiver) = mpsc::sync_channel(1);
         self.sender
             .send(event(reply_sender))
             .map_err(|_| anyhow!("portal input session closed"))?;
         let result = reply_receiver
-            .recv_timeout(Duration::from_secs(3))
+            // Allow the helper shutdown, reconnect delay and portal restore
+            // to finish while keeping a stalled session bounded.
+            .recv_timeout(Duration::from_secs(10))
             .context("portal input request timed out")
             .and_then(|result| result.map_err(|error| anyhow!(error)));
         if let Err(error) = &result {
