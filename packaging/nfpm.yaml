@@ -36,12 +36,13 @@ overrides:
   rpm:
     depends:
       - glibc
-      - libgcc
-      - glib2
+      - "libgcc_s.so.1()(64bit)"
+      - /usr/bin/gdbus
+      - /usr/bin/gsettings
       - wine
       - curl
-      - pipewire-libs
-      - wayland-libs
+      - "libpipewire-0.3.so.0()(64bit)"
+      - "libwayland-client.so.0()(64bit)"
       - xdg-desktop-portal
     recommends:
       - ethtool
