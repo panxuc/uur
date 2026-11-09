@@ -1,16 +1,18 @@
 # Capture frame protocol
 
 How frames travel from the compositor (via PipeWire) into the client's
-capture calls.  Two producers/consumers, one shared file, no locks.
+capture calls. Multiple selected monitor streams are composed into one virtual
+desktop frame in the shared transport; the Windows hook crops each monitor
+request from that frame.
 
 ```text
 xdg-desktop-portal ScreenCast
-        │ (portal-consented session; per-monitor)
+        │ (portal-consented session; one stream per selected monitor)
         ▼
-uur-pw-capture (C) ── PipeWire stream, BGRx, SHM buffers
+uur-pw-capture (C) ── PipeWire streams, BGRx, desktop composition
         │ writes slots, seqlock per slot
         ▼
-$XDG_RUNTIME_DIR/uur/frames.v1  (mode 0600, 64-byte header + 3 slots)
+$XDG_RUNTIME_DIR/uur/frames.v3  (mode 0600, 704-byte header + 3 slots)
         │ mapped read-only by the PE hook through its configured Wine Z: path
         ▼
 uur-hook.dll ── intercepts static/dynamic gdi32!BitBlt/StretchBlt calls;
@@ -19,20 +21,31 @@ uur-hook.dll ── intercepts static/dynamic gdi32!BitBlt/StretchBlt calls;
 
 ## Shared file layout
 
-All integers little-endian.  Total size = 64 + 3 × (8 + stride × height).
+All integers little-endian. Total size = 704 + 3 × (8 + stride × height).
 
 | offset | type | field |
 | --- | --- | --- |
 | 0 | u32 | magic `0x46525555` ("UURF") |
-| 4 | u32 | protocol version = 1 |
+| 4 | u32 | protocol version = 3 |
 | 8 | u32 | frame width (px) |
 | 12 | u32 | frame height (px) |
 | 16 | u32 | stride (bytes per row) |
 | 20 | u32 | format: 1 = BGRx (32 bits per pixel) |
 | 24 | u64 | total frames written (monotonic counter) |
-| 32..64 | — | reserved, zero |
+| 32 | u32 | flags: bit 0 means the frame is a virtual-desktop composite |
+| 36 | u32 | monitor layout record count (1..16) |
+| 40 | u64 | producer CLOCK_MONOTONIC heartbeat in milliseconds; zero if unsupported |
+| 48..64 | — | reserved, zero |
 
-Slot *i* (i = 0, 1, 2) at offset `64 + i × (8 + stride × height)`:
+The fixed-size monitor table starts at offset 64 and contains 16 records of
+40 bytes each. Unused records are zero. Each record contains signed logical
+`x` and `y`, logical `width` and `height`, then unsigned `frame_x`, `frame_y`,
+`frame_width` and `frame_height` describing that monitor's rectangle in the
+composited frame, then `capture_width` and `capture_height` for the negotiated
+source stream resolution. A single-stream capture has one record covering the
+full frame.
+
+Slot *i* (i = 0, 1, 2) at offset `704 + i × (8 + stride × height)`:
 
 | offset | type | field |
 | --- | --- | --- |
@@ -50,12 +63,27 @@ the managed prefix configuration. It is never a global shared-memory name.
 
 ## Geometry and session changes
 
-An exact Wine monitor rectangle maps onto the entire selected frame when their
-aspect ratios match. Pixel dimensions may differ under fractional scaling, where
-Xwayland's render size can exceed the portal's native frame size. Partial regions
-and whole-virtual-desktop requests retain the existing virtual-desktop mapping.
-This does not establish monitor identity between Wine and the portal; selecting
-a non-primary monitor still requires consistent client/input coordinates.
+For one selected stream, an exact Wine monitor rectangle maps onto the entire
+frame when their aspect ratios match. With multiple selected monitor streams,
+the producer uses portal position/size metadata to compose the streams into a
+virtual desktop frame; Wine monitor rectangles then crop their matching region.
+If a portal omits layout metadata, streams are arranged left to right. Fractional
+scaling is normalized to a shared frame scale; each stream is resampled into
+its reported logical rectangle. The hook matches Wine monitor bounds to the
+captured layout and crops in monitor-local coordinates, so differing monitor
+resolutions and vertical offsets do not shift the top edge of a screen.
+The capture service's virtual display API uses the composed frame rectangles
+relative to the primary monitor, including a common pixel scale. UI and WebView
+processes retain native display geometry. Raw source pixel sizes remain metadata
+and are never combined with logical origins. Portals without stable output
+identity require the selected monitor count to match Wine's monitor count for
+per-monitor matching; otherwise the composite is used as a whole.
+
+Multiple monitors are explicitly enabled with `uur display source monitor
+--multiple`, followed by a new session and monitor selection in the portal.
+Upgrading preserves existing grants. Choosing `uur display source monitor`
+returns to a single selected source. Absolute input selects the consented node
+containing the logical position, then sends that node's local coordinates.
 
 Each transport inode has immutable geometry. A negotiated size change creates
 a new mode-0600 file, initializes its header and slots, then atomically replaces
@@ -69,7 +97,9 @@ fd extent, readiness fence and CPU-access synchronization. Implicit modifiers
 require a graphics importer and are not advertised by this CPU consumer.
 
 A stream error, lost connection or ten seconds in PAUSED after streaming makes
-the helper exit with status 75. The ScreenCast supervisor retries up to three
+the helper exit with status 75. A ten-second expired producer heartbeat also
+restarts a hung helper, independently of desktop changes. Both ScreenCast and
+combined RemoteDesktop supervisors retry up to three
 times using the saved restore token, with a one-second backoff. Thirty seconds
 of healthy capture resets the retry budget. An unchanged desktop in STREAMING
 does not trigger this watchdog. Recovery keeps the saved token and performs no

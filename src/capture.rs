@@ -1,9 +1,9 @@
 //! Portal side of the capture path.
 //!
 //! Negotiates an xdg-desktop-portal ScreenCast session, obtains a private
-//! PipeWire file descriptor and the video node id, then hands both to the
-//! C capture helper (`uur-pw-capture`) which runs the PipeWire stream and
-//! publishes frames into a private XDG runtime file (see
+//! PipeWire file descriptor and the consented video nodes, then hands them to
+//! the C capture helper (`uur-pw-capture`) which runs the PipeWire streams and
+//! composites their frames into a private XDG runtime file (see
 //! docs/capture-protocol.md).
 //!
 //! Consent: the first run shows the compositor's share dialog once.  The
@@ -25,15 +25,26 @@ use std::time::{Duration, Instant};
 
 use crate::config::Config;
 
+const FRAME_PROTOCOL_VERSION: u32 = 3;
+
 type PortalSession =
     ashpd::desktop::Session<'static, ashpd::desktop::screencast::Screencast<'static>>;
 
 struct PortalCapture {
     fd: OwnedFd,
-    node: u32,
+    streams: Vec<CaptureStream>,
     restore_token: Option<String>,
     session: PortalSession,
     closed: zbus::proxy::SignalStream<'static>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CaptureStream {
+    pub(crate) node: u32,
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
 }
 
 /// Run the capture path until interrupted.
@@ -93,13 +104,13 @@ pub fn run() -> Result<()> {
             };
             let PortalCapture {
                 fd: pw_fd,
-                node,
+                streams,
                 session,
                 mut closed,
                 ..
             } = match opened {
                 Ok(opened) => opened,
-                Err(error) if !initial_session && failures < 3 => {
+                Err(error) if !initial_session && failures < 3 && !user_cancelled(&error) => {
                     failures += 1;
                     eprintln!("capture reconnect {failures}/3 failed: {error:#}");
                     tokio::select! {
@@ -110,13 +121,18 @@ pub fn run() -> Result<()> {
                 Err(error) => return Err(error),
             };
             initial_session = false;
-            println!("{}", t!("capture.session_ready", node = node));
+            let nodes = streams
+                .iter()
+                .map(|stream| stream.node.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            println!("{}", t!("capture.session_ready", node = nodes));
             match std::fs::remove_file(&frames) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error).context("retiring the previous capture transport"),
             }
-            let mut helper = CaptureHelper(spawn_helper(pw_fd, node)?);
+            let mut helper = CaptureHelper(spawn_capture_helper(pw_fd, &streams)?);
             let mut healthy_since = None;
             let mut portal_closed = false;
             let mut reconfigure = false;
@@ -142,6 +158,10 @@ pub fn run() -> Result<()> {
                     _ = tokio::time::sleep(Duration::from_millis(50)) => {
                         if has_frame(&frames) && healthy_since.is_none() {
                             healthy_since = Some(Instant::now());
+                        }
+                        if helper_stalled(&frames) {
+                            eprintln!("capture helper heartbeat expired; reconnecting");
+                            break None;
                         }
                         if let Some(status) = helper.0.try_wait()
                             .context("waiting for capture helper")? {
@@ -175,14 +195,16 @@ pub fn run() -> Result<()> {
                         "capture recovery failed repeatedly; restart uur run to share again"
                     );
                 }
-                let status = status.context("capture helper stopped without an exit status")?;
-                if !matches!(status.code(), Some(0 | 75) | None) {
+                if status
+                    .as_ref()
+                    .is_some_and(|status| !matches!(status.code(), Some(0 | 75) | None))
+                {
                     anyhow::bail!(
-                        "{} ({status}); capture recovery stopped",
+                        "{} ({status:?}); capture recovery stopped",
                         t!("capture.helper_failed")
                     );
                 }
-                eprintln!("capture stream interrupted ({status}); reconnecting {failures}/3");
+                eprintln!("capture stream interrupted ({status:?}); reconnecting {failures}/3");
             }
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(1)) => {},
@@ -206,7 +228,7 @@ pub fn run() -> Result<()> {
     })
 }
 
-async fn watch_display_changes() -> Option<zbus::proxy::SignalStream<'static>> {
+pub(crate) async fn watch_display_changes() -> Option<zbus::proxy::SignalStream<'static>> {
     let connection = zbus::Connection::session().await.ok()?;
     let bus = zbus::fdo::DBusProxy::new(&connection).await.ok()?;
     let name = "org.gnome.Mutter.DisplayConfig".try_into().ok()?;
@@ -225,7 +247,7 @@ async fn watch_display_changes() -> Option<zbus::proxy::SignalStream<'static>> {
     proxy.receive_signal("MonitorsChanged").await.ok()
 }
 
-async fn next_display_change(changes: &mut Option<zbus::proxy::SignalStream<'static>>) {
+pub(crate) async fn next_display_change(changes: &mut Option<zbus::proxy::SignalStream<'static>>) {
     loop {
         match changes.as_mut() {
             Some(stream) => {
@@ -245,7 +267,7 @@ async fn wait_for_stop(stopping: &AtomicBool) {
     }
 }
 
-struct CaptureHelper(Child);
+pub(crate) struct CaptureHelper(pub(crate) Child);
 
 impl Drop for CaptureHelper {
     fn drop(&mut self) {
@@ -276,17 +298,48 @@ pub(crate) fn has_frame(path: &Path) -> bool {
     }
     let field = |offset| u32::from_le_bytes(header[offset..offset + 4].try_into().unwrap());
     field(0) == 0x4652_5555
-        && field(4) == 1
+        && field(4) == FRAME_PROTOCOL_VERSION
         && field(8) > 0
         && field(12) > 0
         && field(16) >= field(8).saturating_mul(4)
         && field(20) == 1
+        && (1..=16).contains(&field(36))
         && u64::from_le_bytes(header[24..32].try_into().unwrap()) > 0
+}
+
+/// The producer heartbeat advances even when the desktop is static. A zero
+/// value belongs to a producer without heartbeat support, never a stale frame.
+pub(crate) fn helper_stalled(path: &Path) -> bool {
+    let mut header = [0u8; 48];
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    if file.read_exact(&mut header).is_err()
+        || u32::from_le_bytes(header[4..8].try_into().unwrap()) != FRAME_PROTOCOL_VERSION
+    {
+        return false;
+    }
+    let heartbeat = u64::from_le_bytes(header[40..48].try_into().unwrap());
+    let mut now: libc::timespec = unsafe { std::mem::zeroed() };
+    if heartbeat == 0 || unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) } != 0 {
+        return false;
+    }
+    let milliseconds = (now.tv_sec as u64).saturating_mul(1000) + now.tv_nsec as u64 / 1_000_000;
+    milliseconds.saturating_sub(heartbeat) > 10_000
 }
 
 /// Start the native PipeWire consumer with a portal-owned descriptor. The
 /// descriptor remains private to the child and is never reopened by path.
-pub(crate) fn spawn_helper(pw_fd: OwnedFd, node: u32) -> Result<Child> {
+pub(crate) fn spawn_helper(pw_fd: OwnedFd, streams: &[CaptureStream]) -> Result<Child> {
+    spawn_capture_helper(pw_fd, streams)
+}
+
+fn spawn_capture_helper(pw_fd: OwnedFd, streams: &[CaptureStream]) -> Result<Child> {
+    anyhow::ensure!(!streams.is_empty(), "ScreenCast returned no streams");
+    anyhow::ensure!(
+        streams.len() <= 16,
+        "too many ScreenCast streams (maximum 16)"
+    );
     // The helper inherits this descriptor: strip close-on-exec and keep the
     // OwnedFd alive across the spawn (closing it would invalidate the number
     // the child receives).
@@ -303,9 +356,19 @@ pub(crate) fn spawn_helper(pw_fd: OwnedFd, node: u32) -> Result<Child> {
 
     let helper = find_helper("uur-pw-capture")?;
     let mut command = Command::new(&helper);
+    let stream_specs = streams
+        .iter()
+        .map(|stream| {
+            format!(
+                "{},{},{},{},{}",
+                stream.node, stream.x, stream.y, stream.width, stream.height
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(";");
     command
         .env("UUR_PW_FD", raw.to_string())
-        .env("UUR_PW_NODE", node.to_string())
+        .env("UUR_PW_STREAMS", stream_specs)
         .env("UUR_FRAME_PATH", frame_path()?);
     if let Ok(debug) = std::env::var("UUR_PW_DEBUG") {
         command.env("PIPEWIRE_DEBUG", debug);
@@ -316,14 +379,14 @@ pub(crate) fn spawn_helper(pw_fd: OwnedFd, node: u32) -> Result<Child> {
     Ok(child)
 }
 
-fn frame_path() -> Result<PathBuf> {
+pub(crate) fn frame_path() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("UUR_FRAME_PATH") {
         return Ok(PathBuf::from(path));
     }
-    Ok(crate::config::runtime_dir()?.join("frames.v1"))
+    Ok(crate::config::runtime_dir()?.join("frames.v3"))
 }
 
-/// Open the portal session and return (inherited fd number, node id).
+/// Open the portal session and return its PipeWire streams and node ids.
 /// First attempt reuses the stored restore token; if that fails (stale
 /// token, monitor changed, compositor restart) fall back to one
 /// interactive attempt and store the fresh token.
@@ -341,15 +404,33 @@ async fn portal_session(config: &mut Config, interactive: bool) -> Result<Portal
         .into_iter()
         .chain(interactive.then_some(None))
     {
-        match negotiate(&screencast, source, token.as_deref()).await {
+        match negotiate(
+            &screencast,
+            source,
+            config.capture_multiple,
+            token.as_deref(),
+        )
+        .await
+        {
             Ok(capture) => {
                 if capture.restore_token != saved_token {
                     config.capture_restore_token = capture.restore_token.clone();
-                    config.store().context("storing the new restore token")?;
+                    Config::update(|stored| {
+                        if stored.capture_source == config.capture_source
+                            && stored.capture_multiple == config.capture_multiple
+                            && stored.capture_backend == config.capture_backend
+                        {
+                            stored.capture_restore_token = capture.restore_token.clone();
+                        }
+                    })
+                    .context("storing the new restore token")?;
                 }
                 return Ok(capture);
             }
             Err(error) => {
+                if user_cancelled(&error) {
+                    return Err(error);
+                }
                 last_error = Some(error);
             }
         }
@@ -357,6 +438,20 @@ async fn portal_session(config: &mut Config, interactive: bool) -> Result<Portal
     Err(last_error.unwrap_or_else(|| {
         anyhow!("capture permission could not be restored; restart uur run to share again")
     }))
+}
+
+pub(crate) fn user_cancelled(error: &anyhow::Error) -> bool {
+    error.chain().any(|source| {
+        matches!(
+            source.downcast_ref::<ashpd::Error>(),
+            Some(ashpd::Error::Response(
+                ashpd::desktop::ResponseError::Cancelled
+            ))
+        ) || matches!(
+            source.downcast_ref::<ashpd::desktop::ResponseError>(),
+            Some(ashpd::desktop::ResponseError::Cancelled)
+        )
+    })
 }
 
 /// Choose a cursor mode from the flags the portal advertises.
@@ -412,6 +507,7 @@ pub(crate) async fn preferred_cursor_mode(
 async fn negotiate(
     screencast: &ashpd::desktop::screencast::Screencast<'static>,
     source: ashpd::desktop::screencast::SourceType,
+    multiple: bool,
     restore_token: Option<&str>,
 ) -> Result<PortalCapture> {
     use ashpd::desktop::PersistMode;
@@ -440,7 +536,7 @@ async fn negotiate(
             &session,
             cursor_mode,
             source.into(),
-            false,
+            multiple && matches!(source, ashpd::desktop::screencast::SourceType::Monitor),
             restore_token,
             PersistMode::ExplicitlyRevoked,
         )
@@ -449,9 +545,22 @@ async fn negotiate(
 
     let response = screencast.start(&session, None).await?;
     let streams_response = response.response()?;
-    let streams = streams_response.streams();
-    let stream = streams.first().context("no monitor selected")?;
-    let node = stream.pipe_wire_node_id();
+    let streams = streams_response
+        .streams()
+        .iter()
+        .map(|stream| {
+            let (x, y) = stream.position().unwrap_or((i32::MIN, i32::MIN));
+            let (width, height) = stream.size().unwrap_or((0, 0));
+            CaptureStream {
+                node: stream.pipe_wire_node_id(),
+                x,
+                y,
+                width: u32::try_from(width).unwrap_or(0),
+                height: u32::try_from(height).unwrap_or(0),
+            }
+        })
+        .collect::<Vec<_>>();
+    anyhow::ensure!(!streams.is_empty(), "no monitor selected");
     let fresh_token = streams_response.restore_token().map(String::from);
 
     let fd = screencast
@@ -460,7 +569,7 @@ async fn negotiate(
         .context("opening the PipeWire remote")?;
     Ok(PortalCapture {
         fd,
-        node,
+        streams,
         restore_token: fresh_token,
         session,
         closed,

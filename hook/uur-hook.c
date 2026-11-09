@@ -27,6 +27,7 @@
 #include <tlhelp32.h>
 #include <dxgi.h>
 
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -42,7 +43,35 @@
 static UINT(WINAPI *original_send_input)(UINT, LPINPUT, int);
 static HRESULT(WINAPI *original_create_dxgi_factory1)(REFIID, void **);
 static FARPROC(WINAPI *original_get_proc_address)(HMODULE, LPCSTR);
+static HMODULE hook_module;
+static int(WINAPI *original_get_system_metrics)(int);
+static BOOL(WINAPI *original_get_monitor_info_a)(HMONITOR, LPMONITORINFO);
+static BOOL(WINAPI *original_get_monitor_info_w)(HMONITOR, LPMONITORINFO);
+static BOOL(WINAPI *original_enum_display_settings_a)(LPCSTR, DWORD,
+                                                       LPDEVMODEA);
+static BOOL(WINAPI *original_enum_display_settings_w)(LPCWSTR, DWORD,
+                                                       LPDEVMODEW);
+static BOOL(WINAPI *original_enum_display_settings_ex_w)(LPCWSTR, DWORD,
+                                                          LPDEVMODEW, DWORD);
+static int(WINAPI *original_get_device_caps)(HDC, int);
+static LONG(WINAPI *original_query_display_config)(UINT, UINT *,
+                                                    DISPLAYCONFIG_PATH_INFO *,
+                                                    UINT *,
+                                                    DISPLAYCONFIG_MODE_INFO *,
+                                                    DISPLAYCONFIG_TOPOLOGY_ID *);
 UINT WINAPI hook_send_input(UINT count, LPINPUT inputs, int size);
+static int WINAPI hook_get_system_metrics(int);
+static BOOL WINAPI hook_get_monitor_info_a(HMONITOR, LPMONITORINFO);
+static BOOL WINAPI hook_get_monitor_info_w(HMONITOR, LPMONITORINFO);
+static BOOL WINAPI hook_enum_display_settings_a(LPCSTR, DWORD, LPDEVMODEA);
+static BOOL WINAPI hook_enum_display_settings_w(LPCWSTR, DWORD, LPDEVMODEW);
+static BOOL WINAPI hook_enum_display_settings_ex_w(LPCWSTR, DWORD, LPDEVMODEW,
+                                                    DWORD);
+static int WINAPI hook_get_device_caps(HDC, int);
+static LONG WINAPI hook_query_display_config(UINT, UINT *,
+                                             DISPLAYCONFIG_PATH_INFO *, UINT *,
+                                             DISPLAYCONFIG_MODE_INFO *,
+                                             DISPLAYCONFIG_TOPOLOGY_ID *);
 
 static volatile LONG dxgi_factories_patched = 0;
 static volatile LONG dxgi_adapters_patched = 0;
@@ -50,6 +79,9 @@ static volatile LONG dxgi_outputs_patched = 0;
 static volatile LONG dxgi_duplicate_calls = 0;
 static volatile LONG dxgi_dup_acquires = 0;
 static volatile LONG dxgi_dup_frames = 0;
+static volatile LONG frame_crop_debug_count = 0;
+static volatile LONG offorigin_crop_debug_count = 0;
+static void hook_log(const char *text);
 
 static HRESULT __attribute__((unused))(STDMETHODCALLTYPE *original_dxgi_acquire_next_frame)(
     void *duplication, UINT timeout, void *frame_info, void **resource) = NULL;
@@ -234,6 +266,8 @@ static HANDLE frame_map_handle = NULL;
 static uint32_t frame_width;
 static uint32_t frame_height;
 static uint32_t frame_stride;
+static uint32_t frame_flags;
+static uint32_t frame_monitor_count;
 static uint64_t frame_slot_bytes;
 static unsigned char *frame_snapshot;
 static size_t frame_snapshot_capacity;
@@ -241,6 +275,7 @@ static size_t frame_map_size;
 static BY_HANDLE_FILE_INFORMATION frame_identity;
 static ULONGLONG frame_checked_at;
 static SRWLOCK frame_lock = SRWLOCK_INIT;
+static int capture_geometry_enabled;
 
 static char *read_ini_value(const char *path, const char *key);
 
@@ -280,6 +315,8 @@ static void clear_frame_map(void)
     frame_map = NULL;
     frame_map_handle = NULL;
     frame_map_size = 0;
+    frame_flags = 0;
+    frame_monitor_count = 0;
 }
 
 /* Producers publish immutable geometry via atomic replacement. Re-check the
@@ -347,10 +384,13 @@ static int ensure_frame_map(void)
     frame_width = load_u32(header + 8);
     frame_height = load_u32(header + 12);
     frame_stride = load_u32(header + 16);
+    frame_flags = load_u32(header + 32);
+    frame_monitor_count = load_u32(header + 36);
     frame_slot_bytes = 8ull + (uint64_t)frame_stride * frame_height;
     uint64_t expected = UURF_HEADER_BYTES + UURF_SLOT_COUNT * frame_slot_bytes;
     if (frame_width == 0 || frame_height == 0 ||
         frame_width > 16384 || frame_height > 16384 ||
+        frame_monitor_count == 0 || frame_monitor_count > UURF_MAX_MONITORS ||
         frame_stride != frame_width * 4 ||
         (uint64_t)frame_stride * frame_height > 256ull * 1024 * 1024 ||
         expected > (uint64_t)size.QuadPart) {
@@ -359,10 +399,513 @@ static int ensure_frame_map(void)
         frame_map_handle = NULL;
         return 0;
     }
+    for (uint32_t i = 0; i < frame_monitor_count; ++i) {
+        const unsigned char *item = header + UURF_BASE_HEADER_BYTES + i * UURF_MONITOR_BYTES;
+        uint32_t x = load_u32(item + 16), y = load_u32(item + 20);
+        uint32_t w = load_u32(item + 24), h = load_u32(item + 28);
+        if (load_u32(item + 8) == 0 || load_u32(item + 12) == 0 ||
+            w == 0 || h == 0 || x >= frame_width || y >= frame_height ||
+            w > frame_width - x || h > frame_height - y) {
+            UnmapViewOfFile(view);
+            CloseHandle(frame_map_handle);
+            frame_map_handle = NULL;
+            return 0;
+        }
+    }
     frame_map_size = (size_t)size.QuadPart;
     frame_map = view;
     frame_identity = identity;
     return 1;
+}
+
+static int64_t abs_i64(int64_t value)
+{
+    return value < 0 ? -value : value;
+}
+
+/* Compare relative extents, centers and aspect ratio, so a uniform XWayland
+ * scale cannot make a larger adjacent monitor look like the smaller one. */
+static const unsigned char *find_frame_monitor(const unsigned char *header,
+                                               const RECT *target,
+                                               int screen_left,
+                                               int screen_top,
+                                               int screen_width,
+                                               int screen_height)
+{
+    const unsigned char *best = NULL;
+    int64_t min_x = INT64_MAX, min_y = INT64_MAX;
+    int64_t max_x = INT64_MIN, max_y = INT64_MIN;
+    int64_t target_width = (int64_t)target->right - target->left;
+    int64_t target_height = (int64_t)target->bottom - target->top;
+    int64_t target_center_x = (int64_t)target->left + target->right;
+    int64_t target_center_y = (int64_t)target->top + target->bottom;
+    int64_t best_score = INT64_MAX;
+
+    if (screen_width <= 0 || screen_height <= 0 || target_width <= 0 ||
+        target_height <= 0 || frame_monitor_count == 0 ||
+        frame_monitor_count != (uint32_t)GetSystemMetrics(SM_CMONITORS))
+        return NULL;
+
+    for (uint32_t i = 0; i < frame_monitor_count; ++i) {
+        const unsigned char *item = header + UURF_BASE_HEADER_BYTES +
+                                    i * UURF_MONITOR_BYTES;
+        int64_t x = (int32_t)load_u32(item);
+        int64_t y = (int32_t)load_u32(item + 4);
+        int64_t width = load_u32(item + 8);
+        int64_t height = load_u32(item + 12);
+        if (x < min_x)
+            min_x = x;
+        if (y < min_y)
+            min_y = y;
+        if (x + width > max_x)
+            max_x = x + width;
+        if (y + height > max_y)
+            max_y = y + height;
+    }
+    if (max_x <= min_x || max_y <= min_y)
+        return NULL;
+
+    int64_t target_x = ((target_center_x - 2ll * screen_left) * 1000000) /
+                       (2ll * screen_width);
+    int64_t target_y = ((target_center_y - 2ll * screen_top) * 1000000) /
+                       (2ll * screen_height);
+
+    for (uint32_t i = 0; i < frame_monitor_count; ++i) {
+        const unsigned char *item = header + UURF_BASE_HEADER_BYTES +
+                                    i * UURF_MONITOR_BYTES;
+        int64_t x = (int32_t)load_u32(item);
+        int64_t y = (int32_t)load_u32(item + 4);
+        int64_t width = load_u32(item + 8);
+        int64_t height = load_u32(item + 12);
+        int64_t center_x = ((2 * x + width - 2 * min_x) * 1000000) /
+                           (2 * (max_x - min_x));
+        int64_t center_y = ((2 * y + height - 2 * min_y) * 1000000) /
+                           (2 * (max_y - min_y));
+        int64_t size_error =
+            abs_i64(target_width * 1000000 / screen_width -
+                    width * 1000000 / (max_x - min_x)) +
+            abs_i64(target_height * 1000000 / screen_height -
+                    height * 1000000 / (max_y - min_y));
+        int64_t aspect_left = target_width * height;
+        int64_t aspect_right = target_height * width;
+        int64_t aspect_error =
+            abs_i64(aspect_left - aspect_right) * 1000000 /
+            (aspect_left > aspect_right ? aspect_left : aspect_right);
+        int64_t position_error = abs_i64(target_x - center_x) +
+                                 abs_i64(target_y - center_y);
+        int64_t score = size_error * 2 + position_error * 4 + aspect_error;
+        if (score < best_score) {
+            best_score = score;
+            best = item;
+        }
+    }
+    return best;
+}
+
+typedef struct uur_frame_monitor {
+    int32_t logical_x;
+    int32_t logical_y;
+    uint32_t logical_width;
+    uint32_t logical_height;
+    uint32_t frame_x;
+    uint32_t frame_y;
+    uint32_t frame_width;
+    uint32_t frame_height;
+    uint32_t capture_width;
+    uint32_t capture_height;
+} uur_frame_monitor;
+
+/* Copy monitor metadata while holding the same lock used to remap the shared
+ * frame. The primary monitor remains at (0,0); other monitors use their
+ * captured stream's real pixel dimensions rather than XWayland's scaled
+ * monitor rectangles. */
+static int copy_frame_monitors(const RECT *target, uur_frame_monitor *items,
+                               uint32_t *count, uint32_t *primary_index,
+                               uint32_t *target_index)
+{
+    int result = 0;
+    if (!capture_geometry_enabled)
+        return 0;
+    AcquireSRWLockExclusive(&frame_lock);
+    if (!ensure_frame_map())
+        goto done;
+    if ((frame_flags & UURF_FLAG_COMPOSITE) == 0)
+        goto done;
+
+    const unsigned char *header = (const unsigned char *)frame_map;
+    int screen_left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int screen_top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int screen_width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    int screen_height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    if (screen_width < 1)
+        screen_width = (int)frame_width;
+    if (screen_height < 1)
+        screen_height = (int)frame_height;
+
+    POINT origin = {0, 0};
+    HMONITOR primary = MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO primary_info;
+    ZeroMemory(&primary_info, sizeof(primary_info));
+    primary_info.cbSize = sizeof(primary_info);
+    if (primary == NULL || !GetMonitorInfoA(primary, &primary_info))
+        goto done;
+    const unsigned char *primary_layout = find_frame_monitor(
+        header, &primary_info.rcMonitor, screen_left, screen_top,
+        screen_width, screen_height);
+    if (primary_layout == NULL)
+        goto done;
+
+    const unsigned char *selected_layout = target != NULL
+        ? find_frame_monitor(header, target, screen_left, screen_top,
+                             screen_width, screen_height)
+        : NULL;
+    uint32_t total = frame_monitor_count;
+    if (total == 0 || total > UURF_MAX_MONITORS)
+        goto done;
+
+    uint32_t primary_i =
+        (uint32_t)(primary_layout - (header + UURF_BASE_HEADER_BYTES)) /
+        UURF_MONITOR_BYTES;
+    uint32_t target_i = selected_layout != NULL
+        ? (uint32_t)(selected_layout - (header + UURF_BASE_HEADER_BYTES)) /
+              UURF_MONITOR_BYTES
+        : UINT32_MAX;
+    for (uint32_t i = 0; i < total; ++i) {
+        const unsigned char *item = header + UURF_BASE_HEADER_BYTES +
+                                    i * UURF_MONITOR_BYTES;
+        items[i].logical_x = (int32_t)load_u32(item);
+        items[i].logical_y = (int32_t)load_u32(item + 4);
+        items[i].logical_width = load_u32(item + 8);
+        items[i].logical_height = load_u32(item + 12);
+        items[i].frame_x = load_u32(item + 16);
+        items[i].frame_y = load_u32(item + 20);
+        items[i].frame_width = load_u32(item + 24);
+        items[i].frame_height = load_u32(item + 28);
+        items[i].capture_width = load_u32(item + 32);
+        items[i].capture_height = load_u32(item + 36);
+        if (items[i].capture_width == 0 || items[i].capture_height == 0) {
+            items[i].capture_width = items[i].frame_width;
+            items[i].capture_height = items[i].frame_height;
+        }
+    }
+    if (primary_i >= total ||
+        (target_i != UINT32_MAX && target_i >= total))
+        goto done;
+    *count = total;
+    *primary_index = primary_i;
+    if (target_index != NULL)
+        *target_index = target_i;
+    result = 1;
+
+done:
+    ReleaseSRWLockExclusive(&frame_lock);
+    return result;
+}
+
+static int frame_monitor_rect(const uur_frame_monitor *items,
+                              uint32_t primary_index, uint32_t index,
+                              RECT *rect)
+{
+    if (items == NULL || rect == NULL || index >= UURF_MAX_MONITORS ||
+        primary_index >= UURF_MAX_MONITORS ||
+        items[index].frame_width == 0 || items[index].frame_height == 0)
+        return 0;
+    int64_t left = (int64_t)items[index].frame_x - items[primary_index].frame_x;
+    int64_t top = (int64_t)items[index].frame_y - items[primary_index].frame_y;
+    int64_t right = left + items[index].frame_width;
+    int64_t bottom = top + items[index].frame_height;
+    if (left < LONG_MIN || top < LONG_MIN || right > LONG_MAX ||
+        bottom > LONG_MAX)
+        return 0;
+    rect->left = (LONG)left;
+    rect->top = (LONG)top;
+    rect->right = (LONG)right;
+    rect->bottom = (LONG)bottom;
+    return 1;
+}
+
+static LONG scale_monitor_offset(LONG value, LONG old_size, LONG new_size)
+{
+    if (old_size <= 0)
+        return 0;
+    return (LONG)((int64_t)value * new_size / old_size);
+}
+
+static void apply_monitor_layout(LPMONITORINFO info,
+                                 const uur_frame_monitor *items,
+                                 uint32_t primary_index, uint32_t index)
+{
+    RECT adjusted;
+    if (info == NULL ||
+        !frame_monitor_rect(items, primary_index, index, &adjusted))
+        return;
+    RECT old_monitor = info->rcMonitor;
+    RECT old_work = info->rcWork;
+    LONG old_width = old_monitor.right - old_monitor.left;
+    LONG old_height = old_monitor.bottom - old_monitor.top;
+    LONG new_width = adjusted.right - adjusted.left;
+    LONG new_height = adjusted.bottom - adjusted.top;
+    info->rcMonitor = adjusted;
+    info->rcWork.left = adjusted.left +
+        scale_monitor_offset(old_work.left - old_monitor.left, old_width,
+                             new_width);
+    info->rcWork.right = adjusted.left +
+        scale_monitor_offset(old_work.right - old_monitor.left, old_width,
+                             new_width);
+    info->rcWork.top = adjusted.top +
+        scale_monitor_offset(old_work.top - old_monitor.top, old_height,
+                             new_height);
+    info->rcWork.bottom = adjusted.top +
+        scale_monitor_offset(old_work.bottom - old_monitor.top, old_height,
+                             new_height);
+}
+
+static int copy_layout_for_monitor_rect(const RECT *target,
+                                        uur_frame_monitor *items,
+                                        uint32_t *count,
+                                        uint32_t *primary_index,
+                                        uint32_t *target_index)
+{
+    return copy_frame_monitors(target, items, count, primary_index,
+                               target_index);
+}
+
+static void remap_devmode(DEVMODEW *mode)
+{
+    if (mode == NULL || (mode->dmFields & (DM_POSITION | DM_PELSWIDTH |
+                                           DM_PELSHEIGHT)) !=
+                            (DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT) ||
+        mode->dmPelsWidth == 0 || mode->dmPelsHeight == 0)
+        return;
+    RECT old_rect = {mode->dmPosition.x, mode->dmPosition.y,
+                     mode->dmPosition.x + (LONG)mode->dmPelsWidth,
+                     mode->dmPosition.y + (LONG)mode->dmPelsHeight};
+    uur_frame_monitor items[UURF_MAX_MONITORS];
+    uint32_t count = 0, primary_index = 0, target_index = UINT32_MAX;
+    if (!copy_layout_for_monitor_rect(&old_rect, items, &count,
+                                      &primary_index, &target_index) ||
+        target_index >= count)
+        return;
+    RECT adjusted;
+    if (!frame_monitor_rect(items, primary_index, target_index, &adjusted))
+        return;
+    mode->dmPosition.x = adjusted.left;
+    mode->dmPosition.y = adjusted.top;
+    mode->dmPelsWidth = items[target_index].frame_width;
+    mode->dmPelsHeight = items[target_index].frame_height;
+    mode->dmFields |= DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT;
+}
+
+static int WINAPI hook_get_system_metrics(int index)
+{
+    int fallback = original_get_system_metrics != NULL
+                       ? original_get_system_metrics(index)
+                       : GetSystemMetrics(index);
+    if (index != SM_CXSCREEN && index != SM_CYSCREEN &&
+        index != SM_XVIRTUALSCREEN && index != SM_YVIRTUALSCREEN &&
+        index != SM_CXVIRTUALSCREEN && index != SM_CYVIRTUALSCREEN)
+        return fallback;
+
+    uur_frame_monitor items[UURF_MAX_MONITORS];
+    uint32_t count = 0, primary_index = 0;
+    if (!copy_frame_monitors(NULL, items, &count, &primary_index, NULL))
+        return fallback;
+    if (index == SM_CXSCREEN)
+        return (int)items[primary_index].frame_width;
+    if (index == SM_CYSCREEN)
+        return (int)items[primary_index].frame_height;
+
+    int64_t min_x = INT64_MAX, min_y = INT64_MAX;
+    int64_t max_x = INT64_MIN, max_y = INT64_MIN;
+    for (uint32_t i = 0; i < count; ++i) {
+        RECT rect;
+        if (!frame_monitor_rect(items, primary_index, i, &rect))
+            continue;
+        if (rect.left < min_x)
+            min_x = rect.left;
+        if (rect.top < min_y)
+            min_y = rect.top;
+        if (rect.right > max_x)
+            max_x = rect.right;
+        if (rect.bottom > max_y)
+            max_y = rect.bottom;
+    }
+    if (min_x == INT64_MAX || min_y == INT64_MAX || max_x <= min_x ||
+        max_y <= min_y || max_x - min_x > INT_MAX ||
+        max_y - min_y > INT_MAX)
+        return fallback;
+    switch (index) {
+    case SM_XVIRTUALSCREEN:
+        return (int)min_x;
+    case SM_YVIRTUALSCREEN:
+        return (int)min_y;
+    case SM_CXVIRTUALSCREEN:
+        return (int)(max_x - min_x);
+    case SM_CYVIRTUALSCREEN:
+        return (int)(max_y - min_y);
+    default:
+        return fallback;
+    }
+}
+
+static BOOL WINAPI hook_get_monitor_info_a(HMONITOR monitor,
+                                           LPMONITORINFO info)
+{
+    BOOL result = original_get_monitor_info_a != NULL
+                      ? original_get_monitor_info_a(monitor, info)
+                      : GetMonitorInfoA(monitor, info);
+    if (!result || info == NULL || info->cbSize < sizeof(MONITORINFO))
+        return result;
+    uur_frame_monitor items[UURF_MAX_MONITORS];
+    uint32_t count = 0, primary_index = 0, target_index = UINT32_MAX;
+    if (copy_layout_for_monitor_rect(&info->rcMonitor, items, &count,
+                                     &primary_index, &target_index) &&
+        target_index < count)
+        apply_monitor_layout(info, items, primary_index, target_index);
+    return result;
+}
+
+static BOOL WINAPI hook_get_monitor_info_w(HMONITOR monitor,
+                                           LPMONITORINFO info)
+{
+    BOOL result = original_get_monitor_info_w != NULL
+                      ? original_get_monitor_info_w(monitor, info)
+                      : GetMonitorInfoW(monitor, info);
+    if (!result || info == NULL || info->cbSize < sizeof(MONITORINFO))
+        return result;
+    uur_frame_monitor items[UURF_MAX_MONITORS];
+    uint32_t count = 0, primary_index = 0, target_index = UINT32_MAX;
+    if (copy_layout_for_monitor_rect(&info->rcMonitor, items, &count,
+                                     &primary_index, &target_index) &&
+        target_index < count)
+        apply_monitor_layout(info, items, primary_index, target_index);
+    return result;
+}
+
+static BOOL WINAPI hook_enum_display_settings_w(LPCWSTR device, DWORD mode_num,
+                                                LPDEVMODEW mode)
+{
+    BOOL result = original_enum_display_settings_w != NULL
+                      ? original_enum_display_settings_w(device, mode_num, mode)
+                      : FALSE;
+    if (result && mode_num == ENUM_CURRENT_SETTINGS)
+        remap_devmode(mode);
+    return result;
+}
+
+static BOOL WINAPI hook_enum_display_settings_ex_w(LPCWSTR device,
+                                                   DWORD mode_num,
+                                                   LPDEVMODEW mode,
+                                                   DWORD flags)
+{
+    BOOL result = original_enum_display_settings_ex_w != NULL
+                      ? original_enum_display_settings_ex_w(device, mode_num,
+                                                            mode, flags)
+                      : FALSE;
+    if (result && mode_num == ENUM_CURRENT_SETTINGS)
+        remap_devmode(mode);
+    return result;
+}
+
+static BOOL WINAPI hook_enum_display_settings_a(LPCSTR device, DWORD mode_num,
+                                                LPDEVMODEA mode)
+{
+    BOOL result = original_enum_display_settings_a != NULL
+                      ? original_enum_display_settings_a(device, mode_num,
+                                                         mode)
+                      : FALSE;
+    if (!result || mode_num != ENUM_CURRENT_SETTINGS || mode == NULL ||
+        (mode->dmFields & (DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT)) !=
+            (DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT) ||
+        mode->dmPelsWidth == 0 || mode->dmPelsHeight == 0)
+        return result;
+    RECT old_rect = {mode->dmPosition.x, mode->dmPosition.y,
+                     mode->dmPosition.x + (LONG)mode->dmPelsWidth,
+                     mode->dmPosition.y + (LONG)mode->dmPelsHeight};
+    uur_frame_monitor items[UURF_MAX_MONITORS];
+    uint32_t count = 0, primary_index = 0, target_index = UINT32_MAX;
+    if (!copy_layout_for_monitor_rect(&old_rect, items, &count,
+                                      &primary_index, &target_index) ||
+        target_index >= count)
+        return result;
+    RECT adjusted;
+    if (!frame_monitor_rect(items, primary_index, target_index, &adjusted))
+        return result;
+    mode->dmPosition.x = adjusted.left;
+    mode->dmPosition.y = adjusted.top;
+    mode->dmPelsWidth = items[target_index].frame_width;
+    mode->dmPelsHeight = items[target_index].frame_height;
+    mode->dmFields |= DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT;
+    return result;
+}
+
+static int WINAPI hook_get_device_caps(HDC dc, int index)
+{
+    int result = original_get_device_caps != NULL
+                     ? original_get_device_caps(dc, index)
+                     : GetDeviceCaps(dc, index);
+    if ((index != HORZRES && index != VERTRES) || dc == NULL ||
+        original_get_device_caps == NULL ||
+        original_get_device_caps(dc, TECHNOLOGY) != DT_RASDISPLAY)
+        return result;
+
+    POINT origin;
+    if (!GetDCOrgEx(dc, &origin))
+        return result;
+    int width = original_get_device_caps(dc, HORZRES);
+    int height = original_get_device_caps(dc, VERTRES);
+    if (width <= 0 || height <= 0)
+        return result;
+    RECT old_rect = {origin.x, origin.y, origin.x + width, origin.y + height};
+    uur_frame_monitor items[UURF_MAX_MONITORS];
+    uint32_t count = 0, primary_index = 0, target_index = UINT32_MAX;
+    if (!copy_layout_for_monitor_rect(&old_rect, items, &count,
+                                      &primary_index, &target_index) ||
+        target_index >= count)
+        return result;
+    return index == HORZRES ? (int)items[target_index].frame_width
+                            : (int)items[target_index].frame_height;
+}
+
+static LONG WINAPI hook_query_display_config(
+    UINT flags, UINT *path_count, DISPLAYCONFIG_PATH_INFO *paths,
+    UINT *mode_count, DISPLAYCONFIG_MODE_INFO *modes,
+    DISPLAYCONFIG_TOPOLOGY_ID *topology)
+{
+    LONG result = original_query_display_config != NULL
+                      ? original_query_display_config(flags, path_count, paths,
+                                                      mode_count, modes,
+                                                      topology)
+                      : ERROR_NOT_SUPPORTED;
+    if (result != ERROR_SUCCESS || path_count == NULL || mode_count == NULL ||
+        paths == NULL || modes == NULL)
+        return result;
+
+    for (UINT i = 0; i < *path_count; ++i) {
+        UINT source_index = paths[i].sourceInfo.modeInfoIdx;
+        if (source_index >= *mode_count ||
+            modes[source_index].infoType != DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE)
+            continue;
+        DISPLAYCONFIG_SOURCE_MODE *source = &modes[source_index].sourceMode;
+        RECT old_rect = {source->position.x, source->position.y,
+                         source->position.x + (LONG)source->width,
+                         source->position.y + (LONG)source->height};
+        uur_frame_monitor items[UURF_MAX_MONITORS];
+        uint32_t count = 0, primary_index = 0, target_index = UINT32_MAX;
+        if (!copy_layout_for_monitor_rect(&old_rect, items, &count,
+                                          &primary_index, &target_index) ||
+            target_index >= count)
+            continue;
+        RECT adjusted;
+        if (!frame_monitor_rect(items, primary_index, target_index, &adjusted))
+            continue;
+        source->position.x = adjusted.left;
+        source->position.y = adjusted.top;
+        source->width = items[target_index].frame_width;
+        source->height = items[target_index].frame_height;
+        /* Hardware target timings retain their actual clock and scanout. */
+    }
+    return result;
 }
 
 static BOOL source_is_screen_dc(HDC source)
@@ -492,13 +1035,10 @@ static BOOL feed_capture_frame_locked(HDC hdc_dest, int x, int y, int width,
                 screen_width = (int)fw;
             if (screen_height < 1)
                 screen_height = (int)fh;
-            /* The frame holds exactly one monitor, but the client may ask
-             * for that monitor's whole rectangle.  Wine reports the
-             * compositor's monitors in its own order, so the virtual desktop
-             * is only the right basis for a partial request; a complete
-             * monitor request must map onto the whole frame. Fractional
-             * scaling can give Xwayland and the portal different pixel
-             * sizes, so compare aspect ratios rather than resolutions. */
+            /* A single-stream frame represents one selected monitor, so a
+             * complete monitor request maps to the whole frame. Composite
+             * frames already follow the virtual desktop layout and must be
+             * cropped by the request's screen coordinates instead. */
             int sx = 0;
             int sy = 0;
             int sw = 0;
@@ -512,9 +1052,13 @@ static BOOL feed_capture_frame_locked(HDC hdc_dest, int x, int y, int width,
                                    ? MonitorFromRect(&requested, MONITOR_DEFAULTTONULL)
                                    : NULL;
             MONITORINFO info;
+            ZeroMemory(&info, sizeof(info));
             info.cbSize = sizeof(info);
             BOOL whole_monitor = FALSE;
-            if (monitor != NULL && GetMonitorInfoA(monitor, &info)) {
+            BOOL have_monitor_info =
+                monitor != NULL && GetMonitorInfoA(monitor, &info);
+            if ((frame_flags & UURF_FLAG_COMPOSITE) == 0 &&
+                have_monitor_info) {
                 whole_monitor =
                     info.rcMonitor.left == requested.left &&
                     info.rcMonitor.top == requested.top &&
@@ -523,23 +1067,241 @@ static BOOL feed_capture_frame_locked(HDC hdc_dest, int x, int y, int width,
                     (int64_t)(info.rcMonitor.right - info.rcMonitor.left) * fh ==
                         (int64_t)(info.rcMonitor.bottom - info.rcMonitor.top) * fw;
             }
-            if (whole_monitor) {
+            BOOL monitor_local_crop = FALSE;
+            const unsigned char *selected_layout = NULL;
+            const char *crop_mode = "screen";
+            if ((frame_flags & UURF_FLAG_COMPOSITE) != 0 &&
+                have_monitor_info && source_width > 0 && source_height > 0) {
+                int screen_left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+                int screen_top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+                RECT crop_monitor = info.rcMonitor;
+                const unsigned char *layout = NULL;
+                /* Projected rectangles must be checked first: a projected
+                 * secondary monitor may lie inside Wine's old primary bounds. */
+                if (capture_geometry_enabled) {
+                    POINT origin = {0, 0};
+                    HMONITOR primary = MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
+                    MONITORINFO primary_info = {0};
+                    primary_info.cbSize = sizeof(primary_info);
+                    const unsigned char *primary_layout = NULL;
+                    if (primary != NULL && GetMonitorInfoA(primary, &primary_info))
+                        primary_layout = find_frame_monitor(header, &primary_info.rcMonitor,
+                            screen_left, screen_top, screen_width, screen_height);
+                    for (uint32_t i = 0; primary_layout != NULL && i < frame_monitor_count; ++i) {
+                        const unsigned char *item = header + UURF_BASE_HEADER_BYTES + i * UURF_MONITOR_BYTES;
+                        LONG left = (LONG)load_u32(item + 16) - (LONG)load_u32(primary_layout + 16);
+                        LONG top = (LONG)load_u32(item + 20) - (LONG)load_u32(primary_layout + 20);
+                        RECT projected = {left, top, left + (LONG)load_u32(item + 24),
+                                          top + (LONG)load_u32(item + 28)};
+                        if (requested.left >= projected.left && requested.top >= projected.top &&
+                            requested.right <= projected.right && requested.bottom <= projected.bottom) {
+                            layout = item;
+                            crop_monitor = projected;
+                            crop_mode = "stream-local";
+                            break;
+                        }
+                    }
+                }
+                if (layout == NULL)
+                    layout = find_frame_monitor(header, &info.rcMonitor, screen_left, screen_top,
+                                                 screen_width, screen_height);
+                if (layout != NULL) {
+                    selected_layout = layout;
+                    uint32_t frame_x = load_u32(layout + 16);
+                    uint32_t frame_y = load_u32(layout + 20);
+                    uint32_t frame_w = load_u32(layout + 24);
+                    uint32_t frame_h = load_u32(layout + 28);
+                    int64_t monitor_width = (int64_t)crop_monitor.right - crop_monitor.left;
+                    int64_t monitor_height = (int64_t)crop_monitor.bottom - crop_monitor.top;
+                    if (!monitor_local_crop &&
+                        requested.left >= crop_monitor.left &&
+                        requested.top >= crop_monitor.top &&
+                        requested.right <= crop_monitor.right &&
+                        requested.bottom <= crop_monitor.bottom &&
+                        monitor_width > 0 && monitor_height > 0) {
+                        int64_t local_x0 =
+                            (int64_t)requested.left - crop_monitor.left;
+                        int64_t local_y0 =
+                            (int64_t)requested.top - crop_monitor.top;
+                        int64_t local_x1 = local_x0 + source_width;
+                        int64_t local_y1 = local_y0 + source_height;
+                        int64_t sx0 =
+                            frame_x + local_x0 * frame_w / monitor_width;
+                        int64_t sy0 =
+                            frame_y + local_y0 * frame_h / monitor_height;
+                        int64_t sx1 = frame_x +
+                            (local_x1 * frame_w + monitor_width - 1) /
+                                monitor_width;
+                        int64_t sy1 = frame_y +
+                            (local_y1 * frame_h + monitor_height - 1) /
+                                monitor_height;
+                    if (frame_w > 0 && frame_h > 0 &&
+                        frame_x <= fw && frame_y <= fh &&
+                        frame_w <= fw - frame_x && frame_h <= fh - frame_y) {
+                        if (sx0 < 0)
+                            sx0 = 0;
+                        if (sy0 < 0)
+                            sy0 = 0;
+                        if (sx1 > fw)
+                            sx1 = fw;
+                        if (sy1 > fh)
+                            sy1 = fh;
+                        if (sx1 > sx0 && sy1 > sy0) {
+                            sx = (int)sx0;
+                            sy = (int)sy0;
+                            sw = (int)(sx1 - sx0);
+                            sh = (int)(sy1 - sy0);
+                            monitor_local_crop = TRUE;
+                            if (crop_mode[0] == '\0' ||
+                                strcmp(crop_mode, "screen") == 0)
+                                crop_mode = "monitor-local";
+                        }
+                    }
+                    }
+                }
+            }
+            if ((frame_flags & UURF_FLAG_COMPOSITE) != 0 &&
+                !monitor_local_crop) {
+                crop_mode = "composite";
+                int screen_left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+                int screen_top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+                int64_t sx0 = ((int64_t)source_x - screen_left) * fw / screen_width;
+                int64_t sy0 = ((int64_t)source_y - screen_top) * fh / screen_height;
+                /* Keep a nonempty source rectangle nonempty after scaling. */
+                int64_t sx1 = (((int64_t)source_x + source_width - screen_left) * fw + screen_width - 1) / screen_width;
+                int64_t sy1 = (((int64_t)source_y + source_height - screen_top) * fh + screen_height - 1) / screen_height;
+                if (sx0 < 0)
+                    sx0 = 0;
+                if (sy0 < 0)
+                    sy0 = 0;
+                if (sx1 > fw)
+                    sx1 = fw;
+                if (sy1 > fh)
+                    sy1 = fh;
+                if (sx1 <= sx0 || sy1 <= sy0)
+                    return FALSE;
+                sx = (int)sx0;
+                sy = (int)sy0;
+                sw = (int)(sx1 - sx0);
+                sh = (int)(sy1 - sy0);
+            } else if ((frame_flags & UURF_FLAG_COMPOSITE) == 0 &&
+                       whole_monitor) {
+                crop_mode = "whole-monitor";
                 sx = 0;
                 sy = 0;
                 sw = (int)fw;
                 sh = (int)fh;
-            } else {
-                sx = (int)((int64_t)source_x * fw / screen_width);
-                sy = (int)((int64_t)source_y * fh / screen_height);
-                sw = (int)((int64_t)source_width * fw / screen_width);
-                sh = (int)((int64_t)source_height * fh / screen_height);
+            } else if (!monitor_local_crop) {
+                int screen_left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+                int screen_top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+                int64_t sx0 = ((int64_t)source_x - screen_left) * fw /
+                              screen_width;
+                int64_t sy0 = ((int64_t)source_y - screen_top) * fh /
+                              screen_height;
+                int64_t sx1 = ((int64_t)source_x + source_width - screen_left) *
+                              fw + screen_width - 1;
+                int64_t sy1 = ((int64_t)source_y + source_height - screen_top) *
+                              fh + screen_height - 1;
+                sx1 /= screen_width;
+                sy1 /= screen_height;
+                if (sx0 < 0)
+                    sx0 = 0;
+                if (sy0 < 0)
+                    sy0 = 0;
+                if (sx1 > fw)
+                    sx1 = fw;
+                if (sy1 > fh)
+                    sy1 = fh;
+                if (sx1 <= sx0 || sy1 <= sy0)
+                    return FALSE;
+                sx = (int)sx0;
+                sy = (int)sy0;
+                sw = (int)(sx1 - sx0);
+                sh = (int)(sy1 - sy0);
             }
             if (sw < 1)
                 sw = (int)fw;
             if (sh < 1)
                 sh = (int)fh;
+            LONG debug_index = InterlockedIncrement(&frame_crop_debug_count);
+            LONG offorigin_index = 0;
+            if (have_monitor_info &&
+                (info.rcMonitor.left != 0 || info.rcMonitor.top != 0))
+                offorigin_index =
+                    InterlockedIncrement(&offorigin_crop_debug_count);
+            if (debug_index <= 4 ||
+                (offorigin_index > 0 && offorigin_index <= 8)) {
+                char debug[768];
+                LONG monitor_left = have_monitor_info ? info.rcMonitor.left : 0;
+                LONG monitor_top = have_monitor_info ? info.rcMonitor.top : 0;
+                LONG monitor_right = have_monitor_info ? info.rcMonitor.right : 0;
+                LONG monitor_bottom = have_monitor_info ? info.rcMonitor.bottom : 0;
+                LONG layout_x = selected_layout != NULL
+                                    ? (LONG)(int32_t)load_u32(selected_layout)
+                                    : 0;
+                LONG layout_y = selected_layout != NULL
+                                    ? (LONG)(int32_t)load_u32(selected_layout + 4)
+                                    : 0;
+                uint32_t layout_w = selected_layout != NULL
+                                        ? load_u32(selected_layout + 8)
+                                        : 0;
+                uint32_t layout_h = selected_layout != NULL
+                                        ? load_u32(selected_layout + 12)
+                                        : 0;
+                uint32_t layout_fx = selected_layout != NULL
+                                         ? load_u32(selected_layout + 16)
+                                         : 0;
+                uint32_t layout_fy = selected_layout != NULL
+                                         ? load_u32(selected_layout + 20)
+                                         : 0;
+                uint32_t layout_fw = selected_layout != NULL
+                                         ? load_u32(selected_layout + 24)
+                                         : 0;
+                uint32_t layout_fh = selected_layout != NULL
+                                         ? load_u32(selected_layout + 28)
+                                         : 0;
+                uint32_t capture_w = selected_layout != NULL
+                                         ? load_u32(selected_layout + 32)
+                                         : 0;
+                uint32_t capture_h = selected_layout != NULL
+                                         ? load_u32(selected_layout + 36)
+                                         : 0;
+                sprintf(debug,
+                        "crop #%ld offorigin-sample=%ld mode=%s flags=%lu frame=%lux%lu "
+                        "src=%d,%d %dx%d dest=%d,%d %dx%d virtual=%ld,%ld %dx%d "
+                        "monitor=%ld,%ld-%ld,%ld whole=%d layout=%ld,%ld "
+                        "%lux%lu frame-at=%lu,%lu %lux%lu capture=%lux%lu "
+                        "crop=%d,%d %dx%d",
+                        debug_index, offorigin_index, crop_mode,
+                        (unsigned long)frame_flags, (unsigned long)fw,
+                        (unsigned long)fh, source_x,
+                        source_y, source_width, source_height, x, y, width,
+                        height,
+                        (LONG)GetSystemMetrics(SM_XVIRTUALSCREEN),
+                        (LONG)GetSystemMetrics(SM_YVIRTUALSCREEN),
+                        screen_width, screen_height, monitor_left, monitor_top,
+                        monitor_right, monitor_bottom, whole_monitor, layout_x,
+                        layout_y, (unsigned long)layout_w,
+                        (unsigned long)layout_h, (unsigned long)layout_fx,
+                        (unsigned long)layout_fy, (unsigned long)layout_fw,
+                        (unsigned long)layout_fh, (unsigned long)capture_w,
+                        (unsigned long)capture_h, sx, sy, sw, sh);
+                hook_log(debug);
+            }
+            /* Wine's top-down DIB subrectangle path can offset a short
+             * monitor crop from the bottom of the composite. Compact the
+             * chosen rows in-place and draw a whole DIB at source (0,0).
+             * Destination rows precede source rows, so memmove also covers
+             * overlapping crops without another frame-sized allocation. */
+            for (int row = 0; row < sh; ++row)
+                memmove(frame_snapshot + (size_t)row * sw * 4,
+                        frame_snapshot + (size_t)(sy + row) * fstride + (size_t)sx * 4,
+                        (size_t)sw * 4);
+            bmp_header.biWidth = sw;
+            bmp_header.biHeight = -sh;
+            bmp_header.biSizeImage = (DWORD)((size_t)sw * sh * 4);
             int result = StretchDIBits(
-                hdc_dest, x, y, width, height, sx, sy, sw, sh,
+                hdc_dest, x, y, width, height, 0, 0, sw, sh,
                 (const void *)frame_snapshot, (const BITMAPINFO *)&bmp_header,
                 DIB_RGB_COLORS, SRCCOPY);
             ok = result != 0 && (DWORD)result != GDI_ERROR;
@@ -686,6 +1448,17 @@ static FARPROC WINAPI hook_get_proc_address(HMODULE module, LPCSTR name)
         BOOL(WINAPI *stretch_blt)(HDC, int, int, int, int, HDC, int, int,
                                   int, int, DWORD);
         HRESULT(WINAPI *create_dxgi_factory1)(REFIID, void **);
+        int(WINAPI *get_system_metrics)(int);
+        int(WINAPI *get_device_caps)(HDC, int);
+        BOOL(WINAPI *get_monitor_info)(HMONITOR, LPMONITORINFO);
+        BOOL(WINAPI *enum_display_settings_a)(LPCSTR, DWORD, LPDEVMODEA);
+        BOOL(WINAPI *enum_display_settings_w)(LPCWSTR, DWORD, LPDEVMODEW);
+        BOOL(WINAPI *enum_display_settings_ex_w)(LPCWSTR, DWORD, LPDEVMODEW,
+                                                 DWORD);
+        LONG(WINAPI *query_display_config)(UINT, UINT *,
+                                           DISPLAYCONFIG_PATH_INFO *, UINT *,
+                                           DISPLAYCONFIG_MODE_INFO *,
+                                           DISPLAYCONFIG_TOPOLOGY_ID *);
     } replacement;
     FARPROC resolved = original_get_proc_address(module, name);
     if (name == NULL || ((uintptr_t)name >> 16) == 0)
@@ -704,6 +1477,39 @@ static FARPROC WINAPI hook_get_proc_address(HMODULE module, LPCSTR name)
     }
     if (lstrcmpiA(name, "CreateDXGIFactory1") == 0) {
         replacement.create_dxgi_factory1 = hook_create_dxgi_factory1;
+        return replacement.generic;
+    }
+    if (lstrcmpiA(name, "GetSystemMetrics") == 0) {
+        replacement.get_system_metrics = hook_get_system_metrics;
+        return replacement.generic;
+    }
+    if (lstrcmpiA(name, "GetDeviceCaps") == 0) {
+        replacement.get_device_caps = hook_get_device_caps;
+        return replacement.generic;
+    }
+    if (lstrcmpiA(name, "GetMonitorInfoA") == 0) {
+        replacement.get_monitor_info = hook_get_monitor_info_a;
+        return replacement.generic;
+    }
+    if (lstrcmpiA(name, "GetMonitorInfoW") == 0) {
+        replacement.get_monitor_info = hook_get_monitor_info_w;
+        return replacement.generic;
+    }
+    if (lstrcmpiA(name, "EnumDisplaySettingsA") == 0) {
+        replacement.enum_display_settings_a = hook_enum_display_settings_a;
+        return replacement.generic;
+    }
+    if (lstrcmpiA(name, "EnumDisplaySettingsW") == 0) {
+        replacement.enum_display_settings_w = hook_enum_display_settings_w;
+        return replacement.generic;
+    }
+    if (lstrcmpiA(name, "EnumDisplaySettingsExW") == 0) {
+        replacement.enum_display_settings_ex_w =
+            hook_enum_display_settings_ex_w;
+        return replacement.generic;
+    }
+    if (lstrcmpiA(name, "QueryDisplayConfig") == 0) {
+        replacement.query_display_config = hook_query_display_config;
         return replacement.generic;
     }
     return resolved;
@@ -916,7 +1722,7 @@ UINT WINAPI hook_send_input(UINT count, LPINPUT inputs, int size)
 
 static int patch_module_iat(HMODULE base)
 {
-    if (base == NULL)
+    if (base == NULL || base == hook_module)
         return 0;
 
     IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)base;
@@ -973,6 +1779,30 @@ static int patch_module_iat(HMODULE base)
             } else if (lstrcmpiA(name->Name, "GetProcAddress") == 0) {
                 hook_fn = (void *)hook_get_proc_address;
                 original_slot = (void **)&original_get_proc_address;
+            } else if (lstrcmpiA(name->Name, "GetSystemMetrics") == 0) {
+                hook_fn = (void *)hook_get_system_metrics;
+                original_slot = (void **)&original_get_system_metrics;
+            } else if (lstrcmpiA(name->Name, "GetDeviceCaps") == 0) {
+                hook_fn = (void *)hook_get_device_caps;
+                original_slot = (void **)&original_get_device_caps;
+            } else if (lstrcmpiA(name->Name, "GetMonitorInfoA") == 0) {
+                hook_fn = (void *)hook_get_monitor_info_a;
+                original_slot = (void **)&original_get_monitor_info_a;
+            } else if (lstrcmpiA(name->Name, "GetMonitorInfoW") == 0) {
+                hook_fn = (void *)hook_get_monitor_info_w;
+                original_slot = (void **)&original_get_monitor_info_w;
+            } else if (lstrcmpiA(name->Name, "EnumDisplaySettingsA") == 0) {
+                hook_fn = (void *)hook_enum_display_settings_a;
+                original_slot = (void **)&original_enum_display_settings_a;
+            } else if (lstrcmpiA(name->Name, "EnumDisplaySettingsW") == 0) {
+                hook_fn = (void *)hook_enum_display_settings_w;
+                original_slot = (void **)&original_enum_display_settings_w;
+            } else if (lstrcmpiA(name->Name, "EnumDisplaySettingsExW") == 0) {
+                hook_fn = (void *)hook_enum_display_settings_ex_w;
+                original_slot = (void **)&original_enum_display_settings_ex_w;
+            } else if (lstrcmpiA(name->Name, "QueryDisplayConfig") == 0) {
+                hook_fn = (void *)hook_query_display_config;
+                original_slot = (void **)&original_query_display_config;
             }
             if (hook_fn == NULL)
                 continue;
@@ -1064,11 +1894,21 @@ void uur_hook_version(void) {}
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
 {
-    (void)instance;
     (void)reserved;
     if (reason != DLL_PROCESS_ATTACH)
         return TRUE;
 
+    hook_module = instance;
+    WCHAR executable[MAX_PATH];
+    if (GetModuleFileNameW(NULL, executable, MAX_PATH) > 0) {
+        const WCHAR *name = wcsrchr(executable, L'\\');
+        name = name != NULL ? name + 1 : executable;
+        capture_geometry_enabled = lstrcmpiW(name, L"GameViewerServer.exe") == 0 ||
+                                   lstrcmpiW(name, L"GameViewerService.exe") == 0;
+    }
+    WCHAR geometry_option[2];
+    if (GetEnvironmentVariableW(L"UUR_CAPTURE_GEOMETRY", geometry_option, 2) == 1)
+        capture_geometry_enabled = geometry_option[0] == L'1';
     DisableThreadLibraryCalls(instance);
     if (connect_bridge()) {
         hook_log("attach: bridge connected");
