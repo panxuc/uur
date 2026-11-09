@@ -265,5 +265,6 @@ input_backend = "auto"
         assert!(config.capture_restore_token.is_none());
         assert_eq!(config.capture_source, "monitor");
         assert!(!config.capture_multiple);
+        assert_eq!(config.strip_lock_mods.as_deref(), Some("auto"));
     }
 }
