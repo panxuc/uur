@@ -9,6 +9,7 @@
   pipewire,
   wayland,
   wayland-scanner,
+  xorg,
   pulseaudio,
   curl,
   glib,
@@ -38,14 +39,14 @@ rustPlatform.buildRustPackage {
     bash
     wayland-scanner
   ];
-  buildInputs = [ pipewire wayland ];
+  buildInputs = [ pipewire wayland xorg.libX11 xorg.libXext ];
 
   CC = "${stdenv.cc}/bin/cc";
   UUR_BUILD_SHELL = runtimeShell;
   doCheck = false;
 
   postPatch = ''
-    patchShebangs hook/build.sh capture/build.sh packaging/stage.sh
+    patchShebangs hook/build.sh capture/build.sh compat/build.sh packaging/stage.sh
   '';
 
   postBuild = ''
@@ -54,6 +55,7 @@ rustPlatform.buildRustPackage {
     UU_MINGW_DLLTOOL=${windowsBinutils}/bin/${targetPrefix}dlltool \
       ./hook/build.sh
     ./capture/build.sh
+    ./compat/build.sh
   '';
 
   installPhase = ''

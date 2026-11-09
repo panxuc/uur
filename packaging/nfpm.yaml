@@ -25,6 +25,8 @@ overrides:
       - curl
       - libpipewire-0.3-0
       - libwayland-client0
+      - libx11-6
+      - libxext6
       - xdg-desktop-portal
     recommends:
       - xdg-desktop-portal-gnome | xdg-desktop-portal-kde | xdg-desktop-portal-wlr
@@ -43,6 +45,8 @@ overrides:
       - curl
       - "libpipewire-0.3.so.0()(64bit)"
       - "libwayland-client.so.0()(64bit)"
+      - "libX11.so.6()(64bit)"
+      - "libXext.so.6()(64bit)"
       - xdg-desktop-portal
     recommends:
       - ethtool

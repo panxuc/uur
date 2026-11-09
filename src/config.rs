@@ -28,6 +28,14 @@ pub struct Config {
     pub capture_backend: String,
     /// Named Wayland output for direct capture; a single-output session needs no name.
     pub capture_output: Option<String>,
+    /// Strip these X11 modifier bits from key events handed to the managed
+    /// client.  Wine reconciles its asynchronous keyboard state against the
+    /// modifier bits on every key event and, when the client's low-level hook
+    /// swallows lock keys, forges a lock-key down/up pair per keystroke.  The
+    /// "auto" discovers NumLock/ScrollLock from the actual X11 keymap.
+    /// Shortcut, layout, case and keypad modifiers are preserved. Numeric
+    /// masks restrict this discovered set; 0 disables the workaround.
+    pub strip_lock_mods: Option<String>,
 }
 
 impl Default for Config {
@@ -43,6 +51,7 @@ impl Default for Config {
             capture_source: "monitor".into(),
             capture_backend: "portal".into(),
             capture_output: None,
+            strip_lock_mods: Some("auto".into()),
         }
     }
 }

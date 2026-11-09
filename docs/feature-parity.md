@@ -6,7 +6,7 @@
 | Receive remote video | available | Official UU UI under Wine |
 | Share X11 desktop | available | Wine X11 capture |
 | Share Wayland desktop | available | ScreenCast/PipeWire or explicitly enabled native screencopy → GDI adapter |
-| Mouse and keyboard | implemented | RemoteDesktop portal → uinput → XTest capability order |
+| Mouse and keyboard | implemented | RemoteDesktop portal → uinput → XTest capability order; process-local NumLock/ScrollLock workaround for ordinary controller keys; keypad/case behavior remains native |
 | X11 multi-monitor | Wine integration | Native Wine/XRandR display topology |
 | Wayland monitor/window selection | available | Persistent portal source selection |
 | Wayland virtual source | available when advertised | `uur display source virtual` → ScreenCast Virtual source |

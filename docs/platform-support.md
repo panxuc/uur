@@ -100,6 +100,7 @@ Alternatively, build and install for one user:
 cargo build --release --locked
 ./hook/build.sh
 ./capture/build.sh
+./compat/build.sh
 ./scripts/install-user.sh
 ```
 
@@ -131,6 +132,31 @@ Openbox, Fluxbox, IceWM, dwm, qtile, herbstluftwm, spectrwm, and FVWM.
 
 Wine captures the X11 desktop directly and uur injects input with XTest. A
 ScreenCast portal is not required for this path.
+
+#### Lock modifier bits in the client's key events
+
+Wine can inject a NumLock correction pair on each ordinary key when the
+official client's low-level hook blocks lock-key synchronization. This affects
+controller-side typing before uur's remote-input bridge receives any records.
+
+The process-local `libuur-lock-mods.so` workaround discovers exclusive NumLock
+and ScrollLock modifiers from each X11 display's actual keymap. With
+`strip_lock_mods = "auto"` (the default), it filters those bits on ordinary key
+events. Numeric masks further restrict the discovered set; `"0"` disables it.
+It preserves Super, Ctrl, Alt, AltGr, Shift and CapsLock rather than assuming
+that Mod2 and Mod4 are both locks, and refreshes its mapping after layout
+changes. No X server, compositor or user lock setting is changed.
+
+Keypad events keep their original state so NumLock-on digits do not become
+navigation keys. CapsLock also keeps its case semantics. These events retain
+Wine's native reconciliation behavior and can still trigger lock-key
+corrections. Use `WINEDEBUG=+key,+keyboard uur run` and the
+private session log to distinguish real key conversions from correction
+pairs. `uur doctor` reports the local lock state and configured workaround.
+
+After acquiring the session lock, a shim-enabled run restarts only the managed
+Wine prefix so its service manager and service-spawned clients receive the
+same compatibility environment. Other Wine prefixes remain running.
 
 ### Wayland session with ScreenCast and RemoteDesktop portals
 

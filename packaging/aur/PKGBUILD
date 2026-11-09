@@ -22,9 +22,11 @@ depends=(
     'curl'
     'pipewire'
     'wayland'
+    'libx11'
+    'libxext'
     'xdg-desktop-portal'
 )
-makedepends=('cargo' 'gcc' 'pkgconf' 'wayland' 'mingw-w64-gcc' 'mingw-w64-binutils')
+makedepends=('cargo' 'gcc' 'pkgconf' 'wayland' 'libx11' 'mingw-w64-gcc' 'mingw-w64-binutils')
 optdepends=(
     'osslsigncode: Authenticode verification of official updater downloads'
     'xdg-desktop-portal-gnome: GNOME, niri, and compatible Wayland capture/input'
@@ -50,6 +52,7 @@ build() {
     cargo build --release --locked
     ./hook/build.sh
     ./capture/build.sh
+    ./compat/build.sh
 }
 
 check() {

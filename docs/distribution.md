@@ -79,7 +79,7 @@ sudo apk add ~/packages/*/x86_64/uur-*.apk
 Gentoo, Funtoo, Void Linux, Slackware, Solus, Clear Linux, ALT Linux, Exherbo,
 Mageia, OpenMandriva, PCLinuxOS, Venom Linux, and other FHS/glibc systems can
 install the portable release archive or build from source. Their native recipe
-can call `packaging/stage.sh` after the three standard builds; the staged tree
+can call `packaging/stage.sh` after the standard builds (`hook`, `capture`, `compat`); the staged tree
 is shared with pacman, deb, rpm, APK, and the portable archive.
 
 GNU Guix can wrap the same source build and staged tree. Flatpak and Snap need
@@ -91,6 +91,7 @@ manifests granting Wine execution, session D-Bus, PipeWire, and input access.
 cargo build --release --locked
 ./hook/build.sh
 ./capture/build.sh
+./compat/build.sh
 ./scripts/install-user.sh
 ```
 

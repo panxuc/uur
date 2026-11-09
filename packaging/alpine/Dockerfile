@@ -1,7 +1,7 @@
 FROM alpine:edge AS build
 
 RUN apk add --no-cache \
-    bash cargo rust gcc musl-dev pipewire-dev wayland-dev pkgconf \
+    bash cargo rust gcc musl-dev pipewire-dev wayland-dev libx11-dev pkgconf \
     mingw-w64-gcc mingw-w64-binutils
 
 WORKDIR /src
@@ -12,10 +12,11 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     && cargo build --release --locked \
     && ./hook/build.sh \
     && ./capture/build.sh \
+    && ./compat/build.sh \
     && ./packaging/stage.sh /out
 
 FROM alpine:edge
 RUN apk add --no-cache \
-    bash ca-certificates curl glib pipewire-libs wayland-libs-client pulseaudio-utils wine xdg-desktop-portal
+    bash ca-certificates curl glib pipewire-libs wayland-libs-client libx11 pulseaudio-utils wine xdg-desktop-portal
 COPY --from=build /out/ /
 ENTRYPOINT ["/usr/bin/uur"]

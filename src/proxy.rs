@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 pub fn sync(prefix: &Path) -> Result<Option<String>> {
     let http = environment_proxy("HTTP_PROXY", "http_proxy");
@@ -60,7 +60,7 @@ fn proxy_endpoint(value: &str) -> Option<String> {
 }
 
 fn reg_add(prefix: &Path, value: &str, kind: &str, data: &str) -> Result<()> {
-    let status = Command::new("wine")
+    let status = crate::wine::command(prefix)
         .env("WINEPREFIX", prefix)
         .env("WINEDEBUG", "-all")
         .args([

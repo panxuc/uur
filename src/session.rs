@@ -71,6 +71,93 @@ fn hook_source_dir() -> Result<PathBuf> {
     hook_dir()
 }
 
+/// Path of the lock-modifier shim that is LD_PRELOADed into the managed Wine
+/// processes.  Layout mirrors the other native helpers (installed under
+/// `<prefix>/lib/uur`, found next to the build tree during development).
+pub(crate) fn lock_mods_shim() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("../lib/uur/libuur-lock-mods.so"));
+            candidates.push(dir.join("../../build/compat/libuur-lock-mods.so"));
+            candidates.push(dir.join("libuur-lock-mods.so"));
+        }
+    }
+    candidates.push(PathBuf::from("/usr/lib/uur/libuur-lock-mods.so"));
+    candidates.push(PathBuf::from("/usr/local/lib/uur/libuur-lock-mods.so"));
+    if let Ok(home) = std::env::var("HOME") {
+        candidates.push(PathBuf::from(&home).join(".local/lib/uur/libuur-lock-mods.so"));
+    }
+    if let Ok(directory) = std::env::current_dir() {
+        candidates.push(directory.join("build/compat/libuur-lock-mods.so"));
+    }
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+/// Environment for the managed client: keep Wine from forging lock-key
+/// events when X11 reports a locked modifier that the client's keyboard hook
+/// swallows.  See `compat/uur-lock-mods.c` for the full rationale.
+///
+/// This only affects the child process environment; the X server, the
+/// compositor and the user's NumLock setting are never touched.
+fn lock_mods_mask(config: &Config) -> Result<Option<String>> {
+    let Some(mask) = config.strip_lock_mods.as_deref().map(str::trim) else {
+        return Ok(None);
+    };
+    if mask == "auto" {
+        return Ok(Some(mask.to_string()));
+    }
+    let value = match mask.strip_prefix("0x").or_else(|| mask.strip_prefix("0X")) {
+        Some(hex) => u8::from_str_radix(hex, 16),
+        None => mask.parse::<u8>(),
+    }
+    .context("strip_lock_mods must be auto, 0, or an 8-bit decimal/hex mask")?;
+    Ok((value != 0).then(|| format!("0x{value:x}")))
+}
+
+pub(crate) fn apply_lock_mods_env(command: &mut Command, config: &Config) -> Result<()> {
+    apply_lock_mods_with_shim(
+        command,
+        config,
+        lock_mods_shim().as_deref(),
+        std::env::var_os("LD_PRELOAD").as_deref(),
+    )
+}
+
+fn apply_lock_mods_with_shim(
+    command: &mut Command,
+    config: &Config,
+    shim: Option<&Path>,
+    existing: Option<&std::ffi::OsStr>,
+) -> Result<()> {
+    let Some(mask) = lock_mods_mask(config)? else {
+        return Ok(());
+    };
+    let Some(shim) = shim else {
+        eprintln!("lock-modifier shim not found; leaving Wine keyboard handling untouched");
+        return Ok(());
+    };
+    // The dynamic loader splits LD_PRELOAD on ':' and whitespace and offers no
+    // escaping, so a path containing either cannot be expressed there.
+    let Some(shim_text) = shim.to_str() else {
+        eprintln!("lock-modifier shim path must be valid UTF-8; skipping it");
+        return Ok(());
+    };
+    if shim_text.contains(':') || shim_text.chars().any(|ch| ch.is_ascii_whitespace()) {
+        eprintln!("lock-modifier shim path cannot be expressed in LD_PRELOAD; skipping it");
+        return Ok(());
+    }
+    let mut preload = shim.as_os_str().to_os_string();
+    if let Some(existing) = existing.filter(|value| !value.is_empty()) {
+        preload.push(":");
+        preload.push(existing);
+    }
+    command
+        .env("UUR_STRIP_LOCK_MODS", mask)
+        .env("LD_PRELOAD", preload);
+    Ok(())
+}
+
 static DEPLOY_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Replace a managed prefix file without inheriting the source's permissions.
@@ -214,7 +301,7 @@ fn deploy_terminal_proxy(install_dir: &Path) -> Result<PathBuf> {
 const WEBVIEW2_DLL_OVERRIDES: &str = "wtsapi32=b,wevtapi=b";
 
 fn webview2_install_command(prefix: &Path, bootstrapper: &Path) -> Command {
-    let mut command = Command::new("wine");
+    let mut command = crate::wine::command(prefix);
     command
         .env("WINEPREFIX", prefix)
         .env("WINEDEBUG", wine_debug())
@@ -404,6 +491,7 @@ pub fn start() -> Result<()> {
     let _session_lock = acquire_session_lock()?;
     rotate_session_log();
     let config = Config::load()?;
+    let _ = lock_mods_mask(&config)?;
     let on_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
         || std::env::var("XDG_SESSION_TYPE").is_ok_and(|session| session == "wayland");
     let prefix = data_dir()?.join("wine");
@@ -413,6 +501,12 @@ pub fn start() -> Result<()> {
         anyhow::bail!("{}", t!("setup.service_incomplete"));
     }
     let mut resources = SessionResources::new(prefix.clone());
+    if lock_mods_mask(&config)?.is_some() && lock_mods_shim().is_some() {
+        // A server left by setup or an older client has the old environment.
+        // The session lock excludes a running uur session; restart only this
+        // managed prefix so its SCM-spawned clients inherit the same shim.
+        stop_wineserver(&prefix);
+    }
     if let Some(dpi) = xft_dpi() {
         match crate::wine::set_log_pixels(&prefix, dpi) {
             Ok(()) => println!("{}", t!("session.wine_dpi", dpi = dpi)),
@@ -532,7 +626,7 @@ pub fn start() -> Result<()> {
     // Windows process table without repeatedly initializing Wine utilities.
     use std::os::unix::process::CommandExt;
     let marker = hook_dir()?.join("winlogon.exe");
-    let mut monitor = Command::new("wine")
+    let mut monitor = crate::wine::command(&prefix)
         .env("WINEPREFIX", &prefix)
         .env("WINEDEBUG", wine_debug())
         .env("WINEDLLOVERRIDES", "wevtapi=b;wtsapi32=b")
@@ -561,7 +655,7 @@ pub fn start() -> Result<()> {
     // waits forever.
     if !service_running(&prefix) {
         let _ = run_with_timeout(
-            Command::new("wine")
+            crate::wine::command(&prefix)
                 .env("WINEPREFIX", &prefix)
                 .env("WINEDEBUG", wine_debug())
                 .env("WINEDLLOVERRIDES", "wevtapi=b;wtsapi32=b")
@@ -585,7 +679,8 @@ pub fn start() -> Result<()> {
     println!("{}", t!("session.launching_client"));
     let ui = install_dir.join("GameViewer.exe");
     let launch = || -> Result<Child> {
-        Command::new("wine")
+        let mut command = crate::wine::command(&prefix);
+        command
             .env("WINEPREFIX", &prefix)
             .env("WINEDEBUG", wine_debug())
             .current_dir(&install_dir)
@@ -595,9 +690,8 @@ pub fn start() -> Result<()> {
             .env("UUR_BRIDGE_TOKEN", config.bridge_token.clone())
             .stdout(Stdio::from(log.try_clone()?))
             .stderr(Stdio::from(log.try_clone()?))
-            .arg(ui.to_string_lossy().as_ref())
-            .spawn()
-            .context("launching the managed client")
+            .arg(ui.to_string_lossy().as_ref());
+        command.spawn().context("launching the managed client")
     };
 
     // Start the client detached: it IS the session's lifetime anchor.
@@ -759,7 +853,7 @@ fn run_with_timeout(command: &mut Command, timeout: std::time::Duration) -> Opti
 /// True when the Windows service reports STATE 4 (RUNNING) via `sc query`.
 fn service_running(prefix: &Path) -> bool {
     let output = run_with_timeout(
-        Command::new("wine")
+        crate::wine::command(prefix)
             .env("WINEPREFIX", prefix)
             .env("WINEDEBUG", wine_debug())
             .env("WINEDLLOVERRIDES", "wevtapi=b;wtsapi32=b")
@@ -817,7 +911,8 @@ pub(crate) fn show_client() -> Result<()> {
     if process_start_time(pid).ok() != Some(start) {
         anyhow::bail!("managed session is not running");
     }
-    let mut child = Command::new("wine")
+    let mut command = crate::wine::command(&prefix);
+    command
         .env("WINEPREFIX", prefix)
         .env("WINEDEBUG", wine_debug())
         .env("WINEDLLOVERRIDES", "wevtapi=n,wtsapi32=n")
@@ -825,9 +920,8 @@ pub(crate) fn show_client() -> Result<()> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .arg(install.join("GameViewer.exe"))
-        .spawn()
-        .context("showing the managed client")?;
+        .arg(install.join("GameViewer.exe"));
+    let mut child = command.spawn().context("showing the managed client")?;
     thread::spawn(move || {
         let _ = child.wait();
     });
@@ -1037,9 +1131,16 @@ fn wine_process_matches(directory: &Path, prefix: &Path) -> bool {
     let Ok(executable) = std::fs::read_link(directory.join("exe")) else {
         return false;
     };
+    let name = executable
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let name = name.strip_suffix(" (deleted)").unwrap_or(name);
+    let name = name.strip_prefix('.').unwrap_or(name);
+    let name = name.strip_suffix("-wrapped").unwrap_or(name);
     if !matches!(
-        executable.file_name().and_then(|name| name.to_str()),
-        Some("wine" | "wine64" | "wine-preloader" | "wine64-preloader" | "wineserver")
+        name,
+        "wine" | "wine64" | "wine-preloader" | "wine64-preloader" | "wineserver"
     ) {
         return false;
     }
@@ -1106,6 +1207,73 @@ mod tests {
     impl Drop for TestDirectory {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn command_env(command: &Command, key: &str) -> Option<String> {
+        command
+            .get_envs()
+            .find(|(name, _)| *name == OsStr::new(key))
+            .and_then(|(_, value)| value)
+            .map(|value| value.to_string_lossy().into_owned())
+    }
+
+    #[test]
+    fn lock_modifier_env_is_skipped_when_disabled() {
+        for mask in [None, Some("0".to_string()), Some("0x00".to_string())] {
+            let config = Config {
+                strip_lock_mods: mask,
+                ..Config::default()
+            };
+            let mut command = Command::new("wine");
+            apply_lock_mods_with_shim(&mut command, &config, Some(Path::new("/shim.so")), None)
+                .unwrap();
+            assert!(command_env(&command, "LD_PRELOAD").is_none());
+            assert!(command_env(&command, "UUR_STRIP_LOCK_MODS").is_none());
+        }
+    }
+
+    #[test]
+    fn lock_modifier_env_sets_mask_and_preloads_shim() {
+        let config = Config {
+            strip_lock_mods: Some("0x50".into()),
+            ..Config::default()
+        };
+        let mut command = Command::new("wine");
+        apply_lock_mods_with_shim(
+            &mut command,
+            &config,
+            Some(Path::new("/build/compat/libuur-lock-mods.so")),
+            Some(OsStr::new("/nonexistent/first.so")),
+        )
+        .unwrap();
+
+        assert_eq!(
+            command_env(&command, "UUR_STRIP_LOCK_MODS").as_deref(),
+            Some("0x50")
+        );
+        let preload = command_env(&command, "LD_PRELOAD").expect("preload set");
+        assert!(preload.ends_with("/build/compat/libuur-lock-mods.so:/nonexistent/first.so"));
+    }
+
+    #[test]
+    fn lock_modifier_env_reports_missing_shim_without_failing() {
+        let config = Config::default();
+        let mut command = Command::new("wine");
+        apply_lock_mods_with_shim(&mut command, &config, None, None).unwrap();
+        let mask = command_env(&command, "UUR_STRIP_LOCK_MODS");
+        let preload = command_env(&command, "LD_PRELOAD");
+        assert_eq!(mask.is_some(), preload.is_some());
+        assert!(mask.is_none());
+        for path in [
+            "/bad path/shim.so",
+            "/bad\npath/shim.so",
+            "/bad:path/shim.so",
+        ] {
+            let mut command = Command::new("wine");
+            apply_lock_mods_with_shim(&mut command, &config, Some(Path::new(path)), None).unwrap();
+            assert!(command_env(&command, "LD_PRELOAD").is_none());
+            assert!(command_env(&command, "UUR_STRIP_LOCK_MODS").is_none());
         }
     }
 

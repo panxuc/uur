@@ -9,6 +9,22 @@ const OFFICIAL_DOWNLOAD_URL: &str = "https://api.nrd.nie.163.com/api/v1/release/
 const EULA_URL: &str = "https://uuyc.163.com/contact/20240402/40294_1146065.html";
 const SETUP_DLL_OVERRIDES: &str = "wevtapi=b,wtsapi32=b";
 
+/// Apply process-local compatibility to every managed-prefix Wine launch,
+/// including the first utility that starts wineserver and its service manager.
+pub(crate) fn command(prefix: &Path) -> Command {
+    let mut command = Command::new("wine");
+    command.env("WINEPREFIX", prefix);
+    let managed = crate::config::data_dir().is_ok_and(|data| data.join("wine") == prefix);
+    if managed {
+        if let Ok(config) = Config::load() {
+            if let Err(error) = crate::session::apply_lock_mods_env(&mut command, &config) {
+                eprintln!("Wine keyboard compatibility unavailable: {error}");
+            }
+        }
+    }
+    command
+}
+
 struct SetupPrefix(PathBuf);
 
 impl Drop for SetupPrefix {
@@ -90,7 +106,7 @@ pub fn setup(accept_eula: bool, repair: bool) -> Result<()> {
     }
 
     println!("{}", t!("setup.installing_client"));
-    let status = Command::new("wine")
+    let status = command(&prefix)
         .env("WINEPREFIX", &prefix)
         .env("WINEDEBUG", wine_debug())
         .env("WINEDLLOVERRIDES", SETUP_DLL_OVERRIDES)
@@ -174,7 +190,7 @@ pub fn client_service_registered(prefix: &Path) -> bool {
 }
 
 fn query_client_service(prefix: &Path) -> Result<bool> {
-    let output = Command::new("wine")
+    let output = command(prefix)
         .env("WINEPREFIX", prefix)
         .env("WINEDEBUG", wine_debug())
         .env("WINEDLLOVERRIDES", SETUP_DLL_OVERRIDES)
@@ -260,7 +276,7 @@ pub fn apply_registry_compat(prefix: &Path) -> Result<()> {
             format!("HKCU\\{key}")
         };
         for (value, reg_type, data) in &values {
-            let status = Command::new("wine")
+            let status = command(prefix)
                 .env("WINEPREFIX", prefix)
                 .env("WINEDEBUG", wine_debug())
                 .args([
@@ -280,7 +296,7 @@ pub fn apply_registry_compat(prefix: &Path) -> Result<()> {
 }
 
 pub fn set_dll_override(prefix: &Path, name: &str, mode: &str) -> Result<()> {
-    let status = Command::new("wine")
+    let status = command(prefix)
         .env("WINEPREFIX", prefix)
         .env("WINEDEBUG", wine_debug())
         .args([
@@ -317,7 +333,7 @@ pub fn set_log_pixels(prefix: &Path, dpi: u32) -> Result<()> {
 }
 
 fn log_pixels_command(prefix: &Path, dpi: u32) -> Command {
-    let mut command = Command::new("wine");
+    let mut command = command(prefix);
     command
         .env("WINEPREFIX", prefix)
         .env("WINEDEBUG", wine_debug())

@@ -15,6 +15,7 @@ find "$output" -maxdepth 1 -type f \
 cargo build --manifest-path "$project_root/Cargo.toml" --release --locked
 "$project_root/hook/build.sh"
 "$project_root/capture/build.sh"
+"$project_root/compat/build.sh"
 "$project_root/packaging/stage.sh" "$stage"
 
 tar --zstd -C "$stage" -cf "$output/uur-${version}-linux-x86_64.tar.zst" .

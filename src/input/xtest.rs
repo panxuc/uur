@@ -15,6 +15,49 @@ const FAKE_MOTION: u8 = 6;
 /// XTEST detail for motion: 0 = absolute, 1 = relative.
 const MOTION_RELATIVE: u8 = 1;
 
+/// Observe this display's effective lock state without changing any XKB state.
+pub(crate) fn lock_state() -> Result<String> {
+    let (connection, screen) = x11rb::connect(None)?;
+    let setup = connection.setup();
+    let state = u16::from(
+        connection
+            .query_pointer(setup.roots[screen].root)?
+            .reply()?
+            .mask,
+    );
+    let modifiers = connection.get_modifier_mapping()?.reply()?;
+    let keys = connection
+        .get_keyboard_mapping(setup.min_keycode, setup.max_keycode - setup.min_keycode + 1)?
+        .reply()?;
+    let width = modifiers.keycodes.len() / 8;
+    let mut num = 0u16;
+    let mut scroll = 0u16;
+    for (index, code) in modifiers.keycodes.iter().copied().enumerate() {
+        if code < setup.min_keycode || width == 0 {
+            continue;
+        }
+        let offset = usize::from(code - setup.min_keycode) * usize::from(keys.keysyms_per_keycode);
+        let symbols = keys
+            .keysyms
+            .get(offset..offset + usize::from(keys.keysyms_per_keycode));
+        if let Some(symbols) = symbols {
+            if symbols.contains(&0xff7f) {
+                num |= 1 << (index / width);
+            }
+            if symbols.contains(&0xff14) {
+                scroll |= 1 << (index / width);
+            }
+        }
+    }
+    let flag = |mask| if state & mask != 0 { "on" } else { "off" };
+    Ok(format!(
+        "CapsLock={} NumLock={} ScrollLock={} (Num mask={num:#x}, Scroll mask={scroll:#x})",
+        flag(2),
+        flag(num),
+        flag(scroll)
+    ))
+}
+
 /// X11 XTest injection.  Works on every X11 session; on XWayland it reaches
 /// XWayland-native windows only, which is why the portal backend is
 /// preferred on Wayland-only sessions.

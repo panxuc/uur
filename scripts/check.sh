@@ -17,3 +17,4 @@ cc -std=c11 -O2 -Wall -Wextra -Werror \
 "$temporary/cursor-overlay"
 "$project_root/hook/build.sh"
 "$project_root/capture/build.sh"
+"$project_root/compat/build.sh"
