@@ -52,7 +52,7 @@ pub fn sync_wine(prefix: &Path) -> Result<Backend> {
         Backend::None => None,
     };
     if let Some(driver) = driver {
-        let status = Command::new("wine")
+        let status = crate::wine::command(prefix)
             .env("WINEPREFIX", prefix)
             .env("WINEDEBUG", "-all")
             .args([

@@ -347,6 +347,29 @@ pub fn report() -> Result<()> {
     let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
     let on_wayland = session_type == "wayland" || std::env::var_os("WAYLAND_DISPLAY").is_some();
     let configured = crate::config::Config::load()?;
+    if std::env::var_os("DISPLAY").is_some() {
+        match crate::input::xtest::lock_state() {
+            Ok(state) => line("info", "X11 lock state", &state),
+            Err(error) => line("WARN", "X11 lock state", &error.to_string()),
+        }
+        let policy = configured.strip_lock_mods.as_deref().unwrap_or("disabled");
+        let shim = crate::session::lock_mods_shim();
+        let disabled = matches!(policy, "disabled" | "0" | "0x0" | "0x00");
+        line(
+            if !disabled && shim.is_none() {
+                "WARN"
+            } else {
+                "info"
+            },
+            "Wine keyboard workaround",
+            &format!(
+                "{policy}; shim={}; case/keypad remain native",
+                shim.as_deref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "not installed".into())
+            ),
+        );
+    }
     line(
         "info",
         "capture backend",

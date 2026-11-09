@@ -32,8 +32,9 @@ pub struct Config {
     /// client.  Wine reconciles its asynchronous keyboard state against the
     /// modifier bits on every key event and, when the client's low-level hook
     /// swallows lock keys, forges a lock-key down/up pair per keystroke.  The
-    /// default removes NumLock (Mod2) and Super/Meta (Mod4); set to 0 to keep
-    /// Wine's behaviour untouched.
+    /// "auto" discovers NumLock/ScrollLock from the actual X11 keymap.
+    /// Shortcut, layout, case and keypad modifiers are preserved. Numeric
+    /// masks restrict this discovered set; 0 disables the workaround.
     pub strip_lock_mods: Option<String>,
 }
 
@@ -50,8 +51,7 @@ impl Default for Config {
             capture_source: "monitor".into(),
             capture_backend: "portal".into(),
             capture_output: None,
-            // NumLock (Mod2) and Super/Meta (Mod4).  See compat/uur-lock-mods.c.
-            strip_lock_mods: Some("0x50".into()),
+            strip_lock_mods: Some("auto".into()),
         }
     }
 }

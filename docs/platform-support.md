@@ -135,21 +135,28 @@ ScreenCast portal is not required for this path.
 
 #### Lock modifier bits in the client's key events
 
-Wine's X11 driver reconciles its asynchronous Windows keyboard state with the
-modifier bits carried by every X11 key event, and injects a synthetic lock-key
-down/up pair whenever the two disagree. The official client installs a
-low-level keyboard hook that swallows those synthetic keys, so the mismatch
-never resolves and Wine forges one `VK_NUMLOCK` pair *per keystroke*. Peers on
-Windows mostly ignore the stray modifier; on macOS the same bit is interpreted
-as Command, so ordinary typing turns into system shortcuts.
+Wine can inject a NumLock correction pair on each ordinary key when the
+official client's low-level hook blocks lock-key synchronization. This affects
+controller-side typing before uur's remote-input bridge receives any records.
 
-`uur` therefore `LD_PRELOAD`s `libuur-lock-mods.so` into the managed Wine
-processes. It clears the lock modifier bits from `event->state` before the
-application observes each key event, so Wine's reconciliation always agrees
-and no synthetic key is produced. Only the child process environment is
-affected: the X server, the compositor, and the user's NumLock setting are
-never modified. The mask defaults to `0x50` (Mod2/NumLock and Mod4/Super) and
-can be changed with `strip_lock_mods` in `config.toml`; `0` disables it.
+The process-local `libuur-lock-mods.so` workaround discovers exclusive NumLock
+and ScrollLock modifiers from each X11 display's actual keymap. With
+`strip_lock_mods = "auto"` (the default), it filters those bits on ordinary key
+events. Numeric masks further restrict the discovered set; `"0"` disables it.
+It preserves Super, Ctrl, Alt, AltGr, Shift and CapsLock rather than assuming
+that Mod2 and Mod4 are both locks, and refreshes its mapping after layout
+changes. No X server, compositor or user lock setting is changed.
+
+Keypad events keep their original state so NumLock-on digits do not become
+navigation keys. CapsLock also keeps its case semantics. These events retain
+Wine's native reconciliation behavior and can still trigger lock-key
+corrections. Use `WINEDEBUG=+key,+keyboard uur run` and the
+private session log to distinguish real key conversions from correction
+pairs. `uur doctor` reports the local lock state and configured workaround.
+
+After acquiring the session lock, a shim-enabled run restarts only the managed
+Wine prefix so its service manager and service-spawned clients receive the
+same compatibility environment. Other Wine prefixes remain running.
 
 ### Wayland session with ScreenCast and RemoteDesktop portals
 

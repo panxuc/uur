@@ -254,6 +254,7 @@ impl Plan {
                 "lib/uur/user-install",
                 "lib/uur/uur-pw-capture",
                 "lib/uur/uur-wl-capture",
+                "lib/uur/libuur-lock-mods.so",
                 "lib/uur/hook/wevtapi.dll",
                 "lib/uur/hook/uur-hook.dll",
                 "lib/uur/hook/wtsapi32.dll",

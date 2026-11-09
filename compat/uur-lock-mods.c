@@ -1,205 +1,193 @@
-/*
- * uur-lock-mods — stop Wine's X11 driver from forging lock-key events.
- *
- * Background
- * ----------
- * Wine keeps a Windows-side asynchronous keyboard state and reconciles it
- * with the modifier bits carried by every X11 key event
- * (dlls/winex11.drv/keyboard.c::update_lock_state()).  When the two disagree
- * it injects a synthetic lock-key down/up pair through SendInput to "catch
- * up", and if that pair does not change the async state it flips its own
- * bookkeeping and tries again on the next keystroke:
- *
- *     if (NtUserGetAsyncKeyboardState( keystate ) && (keystate[vkey] & 0x01) == prev_state)
- *     {
- *         WARN("keystate %x not changed (%#.2x), probably blocked by hooks\n", ...);
- *         keystate[vkey] ^= 0x01;
- *         set_async_key_state( keystate );
- *     }
- *
- * The UU Remote client installs a low-level keyboard hook that swallows lock
- * keys, so that compensation pair never lands and the mismatch persists: one
- * forged VK_NUMLOCK down/up per keystroke, forever.  The peer then receives
- * "NumLock + letter" instead of a plain letter.  On Windows peers that is
- * mostly harmless; on macOS, where the same modifier bit is interpreted as
- * Command, it turns every keystroke into a system shortcut.
- *
- * What this does
- * --------------
- * Loaded with LD_PRELOAD into the managed Wine processes, this shim strips
- * the lock modifier bits from the `state` field of delivered X key events
- * before the application sees them.  update_lock_state() then always agrees
- * with X, the compensation branch is never entered, and no synthetic key is
- * ever generated.  Because the bits are removed at the delivery boundary,
- * nothing outside these processes changes: the X server, the compositor and
- * the user's NumLock setting are untouched.
- *
- * AltGrMask in X11DRV_ToUnicodeEx() is derived from the same event->state, so
- * it stops being polluted by Mod2 as a side effect.
- *
- * Scope guard: the library is inherited by every child of the process that
- * loads it, so it stays inert unless the process looks like a managed Wine
- * process, or UUR_LOCKSTRIP_FORCE is set (used by the self test).
- *
- * Configuration
- * -------------
- *   UUR_STRIP_LOCK_MODS=<hex>  bits to strip; default 0x50 = Mod2 (NumLock)
- *                              | Mod4 (Super/Meta).  0 disables the shim.
- */
+/* Process-local workaround for Wine/UU lock-key reconciliation. */
 #define _GNU_SOURCE
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/XKBlib.h>
+#include <X11/keysym.h>
 #include <dlfcn.h>
+#include <errno.h>
+#include <limits.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
-typedef int (*next_event_fn)(Display *, XEvent *);
-typedef int (*window_event_fn)(Display *, Window, long, XEvent *);
-typedef int (*check_window_event_fn)(Display *, Window, long, XEvent *);
-typedef int (*mask_event_fn)(Display *, long, XEvent *);
-typedef int (*check_mask_event_fn)(Display *, long, XEvent *);
-typedef int (*check_typed_event_fn)(Display *, int, XEvent *);
-typedef int (*check_typed_window_event_fn)(Display *, Window, int, XEvent *);
-typedef int (*if_event_fn)(Display *, XEvent *, int (*)(Display *, XEvent *, XPointer), XPointer);
-typedef int (*check_if_event_fn)(Display *, XEvent *, int (*)(Display *, XEvent *, XPointer), XPointer);
+typedef Bool (*predicate_fn)(Display *, XEvent *, XPointer);
+static pthread_once_t init_once = PTHREAD_ONCE_INIT;
+static unsigned int requested_mask;
+static int enabled;
+static _Atomic unsigned long generation = 1;
+static _Thread_local Display *cached_display;
+static _Thread_local unsigned long cached_generation;
+static _Thread_local unsigned int cached_mask;
 
-static unsigned long lock_mask;
-static int initialised;
+#define EVENT_FUNCTIONS(X) \
+    X(int, XNextEvent, (Display *d, XEvent *e), (d, e), rc == 0) \
+    X(int, XPeekEvent, (Display *d, XEvent *e), (d, e), rc == 0) \
+    X(int, XWindowEvent, (Display *d, Window w, long m, XEvent *e), (d, w, m, e), rc == 0) \
+    X(Bool, XCheckWindowEvent, (Display *d, Window w, long m, XEvent *e), (d, w, m, e), rc != 0) \
+    X(int, XMaskEvent, (Display *d, long m, XEvent *e), (d, m, e), rc == 0) \
+    X(Bool, XCheckMaskEvent, (Display *d, long m, XEvent *e), (d, m, e), rc != 0) \
+    X(Bool, XCheckTypedEvent, (Display *d, int t, XEvent *e), (d, t, e), rc != 0) \
+    X(Bool, XCheckTypedWindowEvent, (Display *d, Window w, int t, XEvent *e), (d, w, t, e), rc != 0) \
+    X(int, XIfEvent, (Display *d, XEvent *e, predicate_fn p, XPointer a), (d, e, p, a), rc == 0) \
+    X(int, XPeekIfEvent, (Display *d, XEvent *e, predicate_fn p, XPointer a), (d, e, p, a), rc == 0) \
+    X(Bool, XCheckIfEvent, (Display *d, XEvent *e, predicate_fn p, XPointer a), (d, e, p, a), rc != 0)
 
-static int wanted(void)
+#define DECLARE(result, name, args, call, success) static result (*real_##name) args;
+EVENT_FUNCTIONS(DECLARE)
+#undef DECLARE
+static int (*real_XRefreshKeyboardMapping)(XMappingEvent *);
+static Status (*real_XkbRefreshKeyboardMapping)(XkbMapNotifyEvent *);
+static int (*real_XCloseDisplay)(Display *);
+
+static void *symbol(const char *name)
 {
-    if (getenv("UUR_LOCKSTRIP_FORCE") != NULL) return 1;
-    return getenv("WINEPREFIX") != NULL || getenv("WINEDLLOVERRIDES") != NULL;
+    void *address = dlsym(RTLD_NEXT, name);
+    if (address == NULL) {
+        fprintf(stderr, "uur keyboard compatibility: cannot resolve %s\n", name);
+        abort();
+    }
+    return address;
 }
 
-static void init_mask(void)
+static int wine_process(void)
 {
-    const char *env;
+    char executable[PATH_MAX];
+    ssize_t size = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
+    if (size <= 0 || (size_t)size >= sizeof(executable) - 1)
+        return 0;
+    executable[size] = '\0';
+    char *deleted = strstr(executable, " (deleted)");
+    if (deleted != NULL)
+        *deleted = '\0';
+    char *name = strrchr(executable, '/');
+    name = name == NULL ? executable : name + 1;
+    if (*name == '.')
+        name++;
+    char *wrapped = strstr(name, "-wrapped");
+    if (wrapped != NULL && wrapped[8] == '\0')
+        *wrapped = '\0';
+    return !strcmp(name, "wine") || !strcmp(name, "wine64") ||
+           !strcmp(name, "wine-preloader") || !strcmp(name, "wine64-preloader") ||
+           !strcmp(name, "wineserver");
+}
 
-    if (initialised) return;
-    initialised = 1;
-    if (!wanted()) {
-        lock_mask = 0;
+static void initialize(void)
+{
+#define RESOLVE(result, name, args, call, success) real_##name = symbol(#name);
+    EVENT_FUNCTIONS(RESOLVE)
+#undef RESOLVE
+    real_XRefreshKeyboardMapping = symbol("XRefreshKeyboardMapping");
+    real_XkbRefreshKeyboardMapping = symbol("XkbRefreshKeyboardMapping");
+    real_XCloseDisplay = symbol("XCloseDisplay");
+    if (getenv("WINEPREFIX") == NULL || !wine_process())
+        return;
+    const char *mask = getenv("UUR_STRIP_LOCK_MODS");
+    requested_mask = 0xff;
+    if (mask != NULL && strcmp(mask, "auto")) {
+        char *end;
+        errno = 0;
+        unsigned long value = strtoul(mask, &end,
+            mask[0] == '0' && (mask[1] == 'x' || mask[1] == 'X') ? 16 : 10);
+        if (errno || end == mask || *end != '\0' || value > 0xff) {
+            fprintf(stderr, "uur keyboard compatibility: invalid modifier mask\n");
+            return;
+        }
+        requested_mask = (unsigned int)value;
+    }
+    enabled = requested_mask != 0;
+}
+
+/* A modifier shared with a shortcut/layout key is left alone. CapsLock and
+ * ShiftLock are never removed: their state affects character translation. */
+static unsigned int locking_mask(Display *display)
+{
+    unsigned long current = atomic_load_explicit(&generation, memory_order_relaxed);
+    if (cached_display == display && cached_generation == current)
+        return cached_mask;
+    unsigned int mask = 0;
+    XModifierKeymap *mapping = XGetModifierMapping(display);
+    if (mapping != NULL) {
+        for (int modifier = 3; modifier < 8; ++modifier) {
+            int locking = 0, other = 0;
+            for (int key = 0; key < mapping->max_keypermod; ++key) {
+                KeyCode code = mapping->modifiermap[modifier * mapping->max_keypermod + key];
+                if (code == 0)
+                    continue;
+                int lock_key = 0;
+                for (int level = 0; level < 4; ++level) {
+                    KeySym sym = XkbKeycodeToKeysym(display, code, 0, level);
+                    if (sym == XK_Num_Lock || sym == XK_Scroll_Lock)
+                        lock_key = 1;
+                    else if (sym != NoSymbol)
+                        other = 1;
+                }
+                if (lock_key)
+                    locking = 1;
+                else
+                    other = 1;
+            }
+            if (locking && !other)
+                mask |= 1u << modifier;
+        }
+        XFreeModifiermap(mapping);
+    }
+    cached_display = display;
+    cached_generation = current;
+    cached_mask = mask & requested_mask;
+    return cached_mask;
+}
+
+static void scrub(Display *display, XEvent *event)
+{
+    if (!enabled || event == NULL)
+        return;
+    if (event->type == MappingNotify) {
+        atomic_fetch_add_explicit(&generation, 1, memory_order_relaxed);
         return;
     }
-    env = getenv("UUR_STRIP_LOCK_MODS");
-    lock_mask = env != NULL ? strtoul(env, NULL, 0) : (Mod2Mask | Mod4Mask);
+    if (event->type != KeyPress && event->type != KeyRelease)
+        return;
+    /* NumLock changes keypad virtual keys in EVENT_event_to_vkey(). Leave
+     * those events intact rather than turning numeric input into navigation. */
+    KeySym key = XkbKeycodeToKeysym(display, event->xkey.keycode, 0, 0);
+    if (IsKeypadKey(key))
+        return;
+    event->xkey.state &= ~locking_mask(display);
 }
 
-static void scrub(XEvent *event)
+#define IMPLEMENT(result, name, args, call, success) \
+    result name args { \
+        pthread_once(&init_once, initialize); \
+        result rc = real_##name call; \
+        if (success) scrub(d, e); \
+        return rc; \
+    }
+EVENT_FUNCTIONS(IMPLEMENT)
+#undef IMPLEMENT
+
+int XRefreshKeyboardMapping(XMappingEvent *event)
 {
-    if (event == NULL) return;
-    init_mask();
-    if (lock_mask == 0) return;
-    if (event->type == KeyPress || event->type == KeyRelease)
-        event->xkey.state &= ~lock_mask;
+    pthread_once(&init_once, initialize);
+    int result = real_XRefreshKeyboardMapping(event);
+    atomic_fetch_add_explicit(&generation, 1, memory_order_relaxed);
+    return result;
 }
 
-static void *next_symbol(const char *name)
+Status XkbRefreshKeyboardMapping(XkbMapNotifyEvent *event)
 {
-    return dlsym(RTLD_NEXT, name);
+    pthread_once(&init_once, initialize);
+    Status result = real_XkbRefreshKeyboardMapping(event);
+    atomic_fetch_add_explicit(&generation, 1, memory_order_relaxed);
+    return result;
 }
 
-int XNextEvent(Display *display, XEvent *event)
+int XCloseDisplay(Display *display)
 {
-    static next_event_fn fn;
-    int rc;
-    if (fn == NULL) fn = (next_event_fn)next_symbol("XNextEvent");
-    rc = fn(display, event);
-    if (rc == 0) scrub(event);
-    return rc;
-}
-
-int XPeekEvent(Display *display, XEvent *event)
-{
-    static next_event_fn fn;
-    int rc;
-    if (fn == NULL) fn = (next_event_fn)next_symbol("XPeekEvent");
-    rc = fn(display, event);
-    if (rc == 0) scrub(event);
-    return rc;
-}
-
-int XWindowEvent(Display *display, Window window, long mask, XEvent *event)
-{
-    static window_event_fn fn;
-    int rc;
-    if (fn == NULL) fn = (window_event_fn)next_symbol("XWindowEvent");
-    rc = fn(display, window, mask, event);
-    if (rc == 0) scrub(event);
-    return rc;
-}
-
-int XCheckWindowEvent(Display *display, Window window, long mask, XEvent *event)
-{
-    static check_window_event_fn fn;
-    int rc;
-    if (fn == NULL) fn = (check_window_event_fn)next_symbol("XCheckWindowEvent");
-    rc = fn(display, window, mask, event);
-    if (rc != 0) scrub(event);
-    return rc;
-}
-
-int XMaskEvent(Display *display, long mask, XEvent *event)
-{
-    static mask_event_fn fn;
-    int rc;
-    if (fn == NULL) fn = (mask_event_fn)next_symbol("XMaskEvent");
-    rc = fn(display, mask, event);
-    if (rc == 0) scrub(event);
-    return rc;
-}
-
-int XCheckMaskEvent(Display *display, long mask, XEvent *event)
-{
-    static check_mask_event_fn fn;
-    int rc;
-    if (fn == NULL) fn = (check_mask_event_fn)next_symbol("XCheckMaskEvent");
-    rc = fn(display, mask, event);
-    if (rc != 0) scrub(event);
-    return rc;
-}
-
-int XCheckTypedEvent(Display *display, int type, XEvent *event)
-{
-    static check_typed_event_fn fn;
-    int rc;
-    if (fn == NULL) fn = (check_typed_event_fn)next_symbol("XCheckTypedEvent");
-    rc = fn(display, type, event);
-    if (rc != 0) scrub(event);
-    return rc;
-}
-
-int XCheckTypedWindowEvent(Display *display, Window window, int type, XEvent *event)
-{
-    static check_typed_window_event_fn fn;
-    int rc;
-    if (fn == NULL) fn = (check_typed_window_event_fn)next_symbol("XCheckTypedWindowEvent");
-    rc = fn(display, window, type, event);
-    if (rc != 0) scrub(event);
-    return rc;
-}
-
-/* winex11.drv pumps events through XCheckIfEvent (event.c::X11DRV_ProcessEvents);
- * this pair is what actually matters in practice. */
-int XCheckIfEvent(Display *display, XEvent *event,
-                  Bool (*predicate)(Display *, XEvent *, XPointer), XPointer arg)
-{
-    static check_if_event_fn fn;
-    int rc;
-    if (fn == NULL) fn = (check_if_event_fn)next_symbol("XCheckIfEvent");
-    rc = fn(display, event, predicate, arg);
-    if (rc != 0) scrub(event);
-    return rc;
-}
-
-int XIfEvent(Display *display, XEvent *event,
-             Bool (*predicate)(Display *, XEvent *, XPointer), XPointer arg)
-{
-    static if_event_fn fn;
-    int rc;
-    if (fn == NULL) fn = (if_event_fn)next_symbol("XIfEvent");
-    rc = fn(display, event, predicate, arg);
-    scrub(event);
-    return rc;
+    pthread_once(&init_once, initialize);
+    atomic_fetch_add_explicit(&generation, 1, memory_order_relaxed);
+    return real_XCloseDisplay(display);
 }

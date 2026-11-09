@@ -90,7 +90,7 @@ pub fn sync(prefix: &Path) -> Result<Option<Wallpaper>> {
     };
     let compatible = windows_compatible_path(&wallpaper.path)?;
     let windows_path = format!("Z:{}", compatible.display()).replace('/', "\\");
-    let status = Command::new("wine")
+    let status = crate::wine::command(prefix)
         .env("WINEPREFIX", prefix)
         .env("WINEDEBUG", "-all")
         .args([
